@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { G6GraphCanvas } from '@/components/G6GraphCanvas';
+import { D3GraphCanvas } from '@/components/D3GraphCanvas';
 import { ObjectExplorer } from '@/components/ObjectExplorer';
 import { FilterPanel } from '@/components/FilterPanel';
 import { ViewSwitcher } from '@/components/ViewSwitcher';
@@ -19,17 +19,36 @@ import {
   shoeFactoryActionTypes,
 } from '@/ontology/ShoeFactoryOntology';
 import { allEntities, allLinks } from '@/data/shoeFactoryData';
+import { RotateCcw } from 'lucide-react';
+import { SEMANTIC_LEGEND, NODE_SEMANTIC_CONFIG, MAIN_PRODUCTION_CHAIN, ORDER_CHAIN, COST_CHAIN } from '@/data/businessSemantic';
 import './App.css';
 
 export default function App() {
   const [queryEngine, setQueryEngine] = useState<QueryEngine | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<EntityId | undefined>(undefined);
+  const [explorerNodeId, setExplorerNodeId] = useState<EntityId | undefined>(undefined); // ObjectExplorer 显示的节点
   const [mode, setMode] = useState<GraphMode>('map');
   const [breadcrumb, setBreadcrumb] = useState<EntityId[]>([]);
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [searchResults, setSearchResults] = useState<EntityId[]>([]);
   const [windowSize, setWindowSize] = useState({ width: 1200, height: 800 });
+  const [viewMode, setViewMode] = useState<'map' | 'full'>('full'); // 默认全量视图
+
+  // 根据视图模式过滤图谱数据
+  const filteredGraphData = useMemo(() => {
+    if (viewMode === 'full' || graphData.nodes.length === 0) return graphData;
+    // 地图模式：只保留核心链路上的节点
+    const coreIds = new Set([...MAIN_PRODUCTION_CHAIN, ...ORDER_CHAIN, ...COST_CHAIN]);
+    const filteredNodes = graphData.nodes.filter((n: any) => coreIds.has(n.id));
+    const nodeIds = new Set(filteredNodes.map((n: any) => n.id));
+    const filteredLinks = graphData.links.filter((l: any) => {
+      const sid = typeof l.source === 'string' ? l.source : l.source.id;
+      const tid = typeof l.target === 'string' ? l.target : l.target.id;
+      return nodeIds.has(sid) && nodeIds.has(tid);
+    });
+    return { nodes: filteredNodes, links: filteredLinks };
+  }, [graphData, viewMode]);
 
   const canvasWidth = Math.max(windowSize.width - (selectedNodeId ? 320 : 0), 400);
   const canvasHeight = Math.max(windowSize.height, 400);
@@ -203,16 +222,43 @@ export default function App() {
     setMode('map');
   }, []);
 
-  // ==================== 节点交互 ====================
-  const handleNodeClick = useCallback((nodeId: EntityId) => {
+  // ==================== 节点交互（修复版）====================
+  const handleNodeClick = useCallback((nodeId: EntityId | undefined) => {
+    setSelectedNodeId((prev) => {
+      const next = prev === nodeId ? undefined : nodeId;
+      if (next) {
+        setMode('investigate');
+        setBreadcrumb((bp) => (bp.includes(next) ? bp : [...bp, next]));
+      } else {
+        setMode('map');
+      }
+      return next;
+    });
+  }, []);
+
+  const handleNodeContextMenu = useCallback((nodeId: EntityId) => {
+    setExplorerNodeId(nodeId);
     setSelectedNodeId(nodeId);
-    setMode('investigate');
     setBreadcrumb((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
   }, []);
 
+  const handleCloseExplorer = useCallback(() => {
+    setExplorerNodeId(undefined);
+    setSelectedNodeId(undefined);
+    setMode('map');
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    setSelectedNodeId(undefined);
+    setExplorerNodeId(undefined);
+    setBreadcrumb([]);
+    setMode('map');
+    resetFilters();
+  }, [resetFilters]);
+
   const handleNavigateToEntity = useCallback((id: EntityId) => {
+    setExplorerNodeId(id);
     setSelectedNodeId(id);
-    setMode('breadcrumb');
     setBreadcrumb((prev) => (prev.includes(id) ? prev : [...prev, id]));
   }, []);
 
@@ -224,13 +270,14 @@ export default function App() {
     });
   }, []);
 
-  const handleModeChange = useCallback((newMode: GraphMode) => {
-    setMode(newMode);
-    if (newMode === 'map') {
-      setSelectedNodeId(undefined);
-      setSearchResults([]);
-    }
+  const clearBreadcrumb = useCallback(() => {
+    setBreadcrumb([]);
+    setSelectedNodeId(undefined);
+    setExplorerNodeId(undefined);
+    setMode('map');
   }, []);
+
+  // mode 状态保留用于面包屑逻辑，不再用于视图切换（视图由 viewMode 控制）
 
   const handleAction = useCallback((actionId: string, entityId: EntityId) => {
     console.log(`Action ${actionId} on ${entityId}`);
@@ -278,14 +325,16 @@ export default function App() {
     <div className="h-screen w-screen bg-slate-950 flex overflow-hidden">
       {/* 主画布区域 */}
       <div className="flex-1 relative" style={{ minWidth: 0 }}>
-        {graphData.nodes.length > 0 && (
-          <G6GraphCanvas
+        {filteredGraphData.nodes.length > 0 && (
+          <D3GraphCanvas
             key={`g6-${canvasWidth}x${canvasHeight}`}
-            data={graphData}
+            data={filteredGraphData}
             width={canvasWidth}
             height={canvasHeight}
             onNodeClick={handleNodeClick}
-            selectedNodeId={selectedNodeId}
+            onNodeContextMenu={handleNodeContextMenu}
+            activeDomains={filters.domains}
+            activeTypes={filters.objectTypes}
           />
         )}
 
@@ -304,15 +353,12 @@ export default function App() {
           onReset={resetFilters}
         />
 
-        {/* 视图切换 */}
+        {/* 面包屑导航 */}
         <ViewSwitcher
-          mode={mode}
-          onModeChange={handleModeChange}
           breadcrumb={breadcrumb}
           breadcrumbLabels={breadcrumbLabels}
           onBreadcrumbClick={handleBreadcrumbClick}
-          onFitView={() => {}}
-          onResetView={() => {}}
+          onClear={clearBreadcrumb}
         />
 
         {/* 搜索结果显示 */}
@@ -343,33 +389,96 @@ export default function App() {
           </div>
         )}
 
-        {/* 底部统计 */}
-        <div className="absolute bottom-4 left-4 z-10 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span className="text-xs text-slate-400">
-              节点 <span className="text-slate-200 font-medium">{graphData.nodes.length}</span>
+        {/* 底部统计 + 视图切换 */}
+        <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2">
+          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-xs text-slate-400">
+                节点 <span className="text-slate-200 font-medium">{filteredGraphData.nodes.length}</span>
+              </span>
+            </div>
+            <div className="w-px h-3 bg-slate-700" />
+            <div className="flex items-center gap-1.5">
+              <div className="w-2 h-2 rounded-full bg-blue-500" />
+              <span className="text-xs text-slate-400">
+                关系 <span className="text-slate-200 font-medium">{filteredGraphData.links.length}</span>
+              </span>
+            </div>
+            <div className="w-px h-3 bg-slate-700" />
+            <span className="text-xs text-slate-500">
+              池 {allEntities.length}
             </span>
           </div>
-          <div className="w-px h-3 bg-slate-700" />
-          <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full bg-blue-500" />
-            <span className="text-xs text-slate-400">
-              关系 <span className="text-slate-200 font-medium">{graphData.links.length}</span>
-            </span>
+
+          {/* 地图/全量 切换 */}
+          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl flex items-center p-0.5">
+            <button
+              onClick={() => setViewMode('map')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${
+                viewMode === 'map'
+                  ? 'bg-amber-600 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="地图模式：只看核心节点+工艺链路"
+            >
+              地图
+            </button>
+            <button
+              onClick={() => setViewMode('full')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${
+                viewMode === 'full'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="全量模式：显示所有节点"
+            >
+              全量
+            </button>
           </div>
-          <div className="w-px h-3 bg-slate-700" />
-          <span className="text-xs text-slate-500">
-            实体池 {allEntities.length}
-          </span>
+
+          {/* 全局重置视图 */}
+          <button
+            onClick={handleResetView}
+            className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-1.5 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            title="重置视图：取消选中、关闭面板、恢复全图谱"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span className="text-xs">重置</span>
+          </button>
+
+          {/* 语义图例：5类业务角色 */}
+          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-3">
+            {SEMANTIC_LEGEND.map((item) => {
+              const cfg = NODE_SEMANTIC_CONFIG[item.semantic];
+              const shapeClass = cfg.shape === 'circle' ? 'rounded-full'
+                : cfg.shape === 'rect' ? 'rounded-sm'
+                : cfg.shape === 'diamond' ? 'rotate-45 rounded-sm'
+                : 'rounded-sm';
+              return (
+                <div key={item.semantic} className="flex items-center gap-1" title={item.desc}>
+                  <div
+                    className={`w-2.5 h-2.5 ${shapeClass} border border-white/30`}
+                    style={{ backgroundColor: cfg.fill }}
+                  />
+                  <span className="text-[10px] text-slate-400">{item.label}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 右键提示 */}
+          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 text-[10px] text-slate-500">
+            左键选中 · 右键详情 · 空白取消
+          </div>
         </div>
       </div>
 
-      {/* 右侧对象浏览器 */}
-      {selectedNodeId && (
+      {/* 右侧对象浏览器 — 仅右键/主动触发时显示 */}
+      {explorerNodeId && (
         <div className="flex-shrink-0" style={{ width: 320 }}>
           <ObjectExplorer
-            entityId={selectedNodeId}
+            entityId={explorerNodeId}
             getObject={getObject}
             getLinksForObject={getLinksForObject}
             getObjectType={(id) => registryRef.current.getObjectType(id)}
@@ -377,6 +486,7 @@ export default function App() {
             getActionTypesForObject={(typeId) => registryRef.current.listActionTypesForObject(typeId)}
             onNavigateToEntity={handleNavigateToEntity}
             onAction={handleAction}
+            onClose={handleCloseExplorer}
           />
         </div>
       )}

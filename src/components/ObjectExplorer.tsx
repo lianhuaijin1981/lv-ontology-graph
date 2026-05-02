@@ -1,6 +1,10 @@
 /**
- * ObjectExplorer - Palantir 风格实体详情面板
- * 显示选中实体的属性、可执行动作、关联对象
+ * ObjectExplorer — 修复版实体详情面板
+ *
+ * 变更：
+ * 1. 添加右上角关闭按钮（X）
+ * 2. 不再自动弹出，需用户主动触发（右键节点/悬浮菜单）
+ * 3. 关闭后恢复全图谱视图
  */
 
 import { useState, useEffect } from 'react';
@@ -12,18 +16,12 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
-  ChevronDown,
-  ChevronRight,
-  Activity,
-  ArrowRight,
-  FileSearch,
-  AlertTriangle,
-  Download,
-  Layers,
+  ChevronDown, ChevronRight, Activity, ArrowRight, AlertTriangle,
+  Download, X, MousePointerClick,
 } from 'lucide-react';
 
 interface ObjectExplorerProps {
-  entityId: EntityId | null;
+  entityId: EntityId;
   getObject: (id: EntityId) => OntologyObject | undefined;
   getLinksForObject: (id: EntityId) => OntologyLink[];
   getObjectType: (id: string) => ObjectType | undefined;
@@ -31,6 +29,7 @@ interface ObjectExplorerProps {
   getActionTypesForObject: (typeId: string) => ActionType[];
   onNavigateToEntity: (id: EntityId) => void;
   onAction: (actionId: string, entityId: EntityId) => void;
+  onClose: () => void; // 关闭回调
 }
 
 export function ObjectExplorer({
@@ -42,6 +41,7 @@ export function ObjectExplorer({
   getActionTypesForObject,
   onNavigateToEntity,
   onAction,
+  onClose,
 }: ObjectExplorerProps) {
   const [object, setObject] = useState<OntologyObject | null>(null);
   const [links, setLinks] = useState<OntologyLink[]>([]);
@@ -50,13 +50,6 @@ export function ObjectExplorer({
   const [actionsOpen, setActionsOpen] = useState(true);
 
   useEffect(() => {
-    if (!entityId) {
-      setObject(null);
-      setLinks([]);
-      setActions([]);
-      return;
-    }
-
     const obj = getObject(entityId);
     if (obj) {
       setObject(obj);
@@ -65,53 +58,46 @@ export function ObjectExplorer({
     }
   }, [entityId, getObject, getLinksForObject, getActionTypesForObject]);
 
-  if (!object) {
-    return (
-      <div className="h-full w-80 bg-slate-900 border-l border-slate-800 flex flex-col">
-        <div className="p-4 border-b border-slate-800">
-          <h3 className="text-sm font-semibold text-slate-300">对象浏览器</h3>
-          <p className="text-xs text-slate-500 mt-1">点击图谱节点查看详情</p>
-        </div>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center text-slate-600">
-            <Layers className="w-8 h-8 mx-auto mb-2" />
-            <p className="text-sm">未选择对象</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!object) return null;
 
   const typeDef = getObjectType(object.typeId);
   const domainColor = typeDef?.color || '#64748B';
-
-  // 分组关联对象
   const outgoingLinks = links.filter((l) => l.sourceId === object.id);
   const incomingLinks = links.filter((l) => l.targetId === object.id);
 
   return (
-    <div className="h-full w-80 bg-slate-900 border-l border-slate-800 flex flex-col">
+    <div className="h-full w-80 bg-slate-900 border-l border-slate-800 flex flex-col animate-in slide-in-from-right duration-200">
       {/* 头部 */}
-      <div className="p-4 border-b border-slate-800">
-        <div className="flex items-center gap-2 mb-2">
-          <div
-            className="w-3 h-3 rounded-full"
-            style={{ backgroundColor: domainColor }}
-          />
-          <Badge variant="outline" className="text-xs border-slate-700 text-slate-400">
-            {typeDef?.displayName || object.typeId}
-          </Badge>
+      <div className="p-4 border-b border-slate-800 flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: domainColor }} />
+            <Badge variant="outline" className="text-xs border-slate-700 text-slate-400">
+              {typeDef?.displayName || object.typeId}
+            </Badge>
+          </div>
+          <h2 className="text-base font-bold text-slate-100">{object.displayName}</h2>
+          <p className="text-xs text-slate-500 mt-1">{object.domain}</p>
         </div>
-        <h2 className="text-base font-bold text-slate-100">{object.displayName}</h2>
-        <p className="text-xs text-slate-500 mt-1">{object.domain}</p>
+        <button
+          onClick={onClose}
+          className="ml-2 p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors flex-shrink-0"
+          title="关闭面板"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
       <ScrollArea className="flex-1">
-        {/* 属性表 */}
+        {/* 提示：如何呼出 */}
+        <div className="mx-4 mt-3 px-3 py-2 bg-slate-800/60 rounded-lg flex items-center gap-2">
+          <MousePointerClick className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+          <p className="text-[11px] text-slate-500">右键节点可快速呼出此面板</p>
+        </div>
+
+        {/* 属性 */}
         <div className="p-4">
-          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-            属性
-          </h4>
+          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">属性</h4>
           <div className="space-y-2">
             {typeDef?.properties.map((prop) => {
               const value = object.properties[prop.key];
@@ -135,30 +121,19 @@ export function ObjectExplorer({
           <div className="p-4">
             <Collapsible open={actionsOpen} onOpenChange={setActionsOpen}>
               <CollapsibleTrigger className="flex items-center gap-1 w-full text-left mb-2">
-                {actionsOpen ? (
-                  <ChevronDown className="w-4 h-4 text-slate-500" />
-                ) : (
-                  <ChevronRight className="w-4 h-4 text-slate-500" />
-                )}
-                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                  可执行动作
-                </h4>
+                {actionsOpen ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+                <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">可执行动作</h4>
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="space-y-2">
                   {actions.map((action) => (
-                    <Button
-                      key={action.id}
-                      variant="ghost"
-                      size="sm"
+                    <Button key={action.id} variant="ghost" size="sm"
                       className="w-full justify-start gap-2 text-slate-300 hover:text-white hover:bg-slate-800"
-                      onClick={() => onAction(action.id, object.id)}
-                    >
+                      onClick={() => onAction(action.id, object.id)}>
                       {action.category === 'drillDown' && <ArrowRight className="w-4 h-4" />}
                       {action.category === 'analysis' && <Activity className="w-4 h-4" />}
                       {action.category === 'export' && <Download className="w-4 h-4" />}
                       {action.category === 'alert' && <AlertTriangle className="w-4 h-4" />}
-                      {action.category === 'workflow' && <FileSearch className="w-4 h-4" />}
                       <span className="text-xs">{action.displayName}</span>
                     </Button>
                   ))}
@@ -174,18 +149,11 @@ export function ObjectExplorer({
         <div className="p-4">
           <Collapsible open={relatedOpen} onOpenChange={setRelatedOpen}>
             <CollapsibleTrigger className="flex items-center gap-1 w-full text-left mb-2">
-              {relatedOpen ? (
-                <ChevronDown className="w-4 h-4 text-slate-500" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-slate-500" />
-              )}
-              <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                关联对象 ({links.length})
-              </h4>
+              {relatedOpen ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+              <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">关联对象 ({links.length})</h4>
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="space-y-3">
-                {/* 出向关联 */}
                 {outgoingLinks.length > 0 && (
                   <div>
                     <p className="text-xs text-slate-600 mb-1">出向关联</p>
@@ -194,11 +162,9 @@ export function ObjectExplorer({
                       const linkType = getLinkType(link.typeId);
                       if (!target) return null;
                       return (
-                        <button
-                          key={link.id}
+                        <button key={link.id}
                           className="w-full text-left flex items-center gap-2 p-2 rounded hover:bg-slate-800 transition-colors"
-                          onClick={() => onNavigateToEntity(target.id)}
-                        >
+                          onClick={() => onNavigateToEntity(target.id)}>
                           <ArrowRight className="w-3 h-3 text-slate-500" />
                           <div className="flex-1 min-w-0">
                             <p className="text-xs text-slate-300 truncate">{target.displayName}</p>
@@ -209,8 +175,6 @@ export function ObjectExplorer({
                     })}
                   </div>
                 )}
-
-                {/* 入向关联 */}
                 {incomingLinks.length > 0 && (
                   <div>
                     <p className="text-xs text-slate-600 mb-1">入向关联</p>
@@ -219,11 +183,9 @@ export function ObjectExplorer({
                       const linkType = getLinkType(link.typeId);
                       if (!source) return null;
                       return (
-                        <button
-                          key={link.id}
+                        <button key={link.id}
                           className="w-full text-left flex items-center gap-2 p-2 rounded hover:bg-slate-800 transition-colors"
-                          onClick={() => onNavigateToEntity(source.id)}
-                        >
+                          onClick={() => onNavigateToEntity(source.id)}>
                           <ArrowRight className="w-3 h-3 text-slate-500 rotate-180" />
                           <div className="flex-1 min-w-0">
                             <p className="text-xs text-slate-300 truncate">{source.displayName}</p>

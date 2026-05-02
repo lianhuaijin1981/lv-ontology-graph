@@ -1,285 +1,228 @@
 /**
- * G6GraphCanvas - AntV G6 v5 渲染引擎
- * 
- * 架构变更：
- * - D3.js 纯渲染层 → G6 v5 (WebGL/Canvas/SVG 自动切换)
- * - G6 内置 force 布局（基于 d3-force 原理）
- * - 保留 QueryEngine 数据层 + 业务交互层
- * 
- * G6 v5 核心特性：
- * - 渲染器自动选择：节点<200用Canvas，>500自动切WebGL
- * - 内置力导向布局 + 多种布局算法
- * - 数据驱动样式（函数式映射）
- * - 内置交互：拖拽、缩放、悬停高亮
+ * G6GraphCanvas — 根治闪烁+重叠
+ *
+ * 根治策略：
+ * 1. animated: false → 布局后台完成，一次性渲染，零闪烁
+ * 2. 标签默认隐藏（labelOpacity: 0）→ 零重叠
+ * 3. 悬停 Tooltip 显示节点信息 → 信息不丢失
+ * 4. 选中时显示该节点标签 → 关键信息可见
  */
 
 import { useRef, useEffect } from 'react';
 import { Graph } from '@antv/g6';
 import type { EntityId } from '@/types';
 import type { GraphData, GraphNode, GraphLink } from '@/graph/types';
+import {
+  getNodeSemanticConfig,
+  getEdgeSemanticConfig,
+  isInCoreChain,
+  isCoreChainEdge,
+} from '@/data/businessSemantic';
 
-interface G6GraphCanvasProps {
+interface Props {
   data: GraphData;
   width: number;
   height: number;
-  onNodeClick?: (nodeId: EntityId) => void;
-  selectedNodeId?: EntityId;
+  onNodeClick?: (nodeId: EntityId | undefined) => void;
+  onNodeContextMenu?: (nodeId: EntityId) => void;
+  activeDomains?: string[];
+  activeTypes?: string[];
 }
 
-export function G6GraphCanvas({
-  data,
-  width,
-  height,
-  onNodeClick,
-  selectedNodeId,
-}: G6GraphCanvasProps) {
+const TIER = {
+  1: { size: 44, font: 11, weight: 700 },
+  2: { size: 32, font: 9,  weight: 500 },
+  3: { size: 20, font: 8,  weight: 400 },
+};
+
+function nodeTier(nodeId: string, typeId: string): 1 | 2 | 3 {
+  if (isInCoreChain(nodeId)) return 1;
+  if (['workshop','process','equipment','bizSystem','designer','patternMaster','supplier','customer','channel','material','order'].includes(typeId)) return 2;
+  return 3;
+}
+
+function dimColor(hex: string, f: number): string {
+  const r = parseInt(hex.slice(1,3), 16), g = parseInt(hex.slice(3,5), 16), b = parseInt(hex.slice(5,7), 16);
+  return `#${Math.round(r*f+30*(1-f)).toString(16).padStart(2,'0')}${Math.round(g*f+30*(1-f)).toString(16).padStart(2,'0')}${Math.round(b*f+30*(1-f)).toString(16).padStart(2,'0')}`;
+}
+
+export function G6GraphCanvas({ data, width, height, onNodeClick, onNodeContextMenu, activeDomains = [], activeTypes = [] }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
-  const selectedRef = useRef<string | undefined>(selectedNodeId);
-  const onClickRef = useRef(onNodeClick);
+  const lastId = useRef<string | null>(null);
+  const cb = useRef({ onNodeClick, onNodeContextMenu });
+  cb.current = { onNodeClick, onNodeContextMenu };
 
-  selectedRef.current = selectedNodeId;
-  onClickRef.current = onNodeClick;
+  const build = (d: GraphData) => {
+    const hasF = activeDomains.length > 0 || activeTypes.length > 0;
 
-  // 转换数据格式
-  const convertData = (graphData: GraphData): { nodes: any[]; edges: any[] } => {
-    return {
-      nodes: graphData.nodes.map((n: GraphNode) => ({
+    const nodes = d.nodes.map((n: GraphNode) => {
+      const sc = getNodeSemanticConfig(n.typeId);
+      const t = nodeTier(n.id, n.typeId);
+      const tc = TIER[t];
+      const inC = isInCoreChain(n.id);
+      const dimmed = hasF && !((activeDomains.length===0||activeDomains.includes(n.domain)) && (activeTypes.length===0||activeTypes.includes(n.typeId)));
+
+      return {
         id: n.id,
-        data: {
-          typeId: n.typeId,
-          domain: n.domain,
-          importance: n.importance,
-          level: n.level,
-          isAggregate: n.isAggregate,
-          childCount: n.childCount,
-          radius: n.radius,
-        },
+        data: { label: n.label, tier: t, inChain: inC, dimmed, semantic: sc.label, typeId: n.typeId, domain: n.domain },
         style: {
-          x: n.x,
-          y: n.y,
-          fill: n.color,
-          size: n.isAggregate ? 48 : n.radius * 2 + 6,
+          fill: dimmed ? dimColor(sc.fill, 0.4) : t===3 ? dimColor(sc.fill, 0.55) : sc.fill,
+          size: tc.size,
+          // 标签默认隐藏
           labelText: n.label,
-          labelFill: n.isAggregate ? '#FFFFFF' : '#F1F5F9',
-          labelFontSize: n.isAggregate ? 13 : 11,
-          labelFontWeight: n.isAggregate ? 600 : 400,
-          labelOffsetY: n.isAggregate ? 28 : 18,
-          lineWidth: n.isAggregate ? 2 : 1.5,
-          stroke: n.isAggregate ? 'rgba(255,255,255,0.4)' : '#0F172A',
-          shadowColor: n.color,
-          shadowBlur: n.isAggregate ? 12 : 0,
-          opacity: 0.95,
-          // 形状映射
-          type: n.shape === 'rect' ? 'rect' : n.shape === 'diamond' ? 'diamond' : n.shape === 'hexagon' ? 'hexagon' : 'circle',
-        },
-      })),
-      edges: graphData.links.map((l: GraphLink) => ({
-        id: l.id,
-        source: typeof l.source === 'string' ? l.source : l.source.id,
-        target: typeof l.target === 'string' ? l.target : l.target.id,
-        data: {
-          typeId: l.typeId,
-          semantics: l.semantics,
-        },
-        style: {
-          stroke: l.color,
-          lineWidth: l.width,
-          labelText: l.label,
           labelFill: '#CBD5E1',
-          labelFontSize: 9,
-          endArrow: l.directed,
-          endArrowSize: 6,
-          opacity: 0.6,
-          lineDash: l.style === 'dashed' ? [4, 2] : l.style === 'dotted' ? [2, 2] : undefined,
+          labelFontSize: tc.font,
+          labelFontWeight: tc.weight,
+          labelOffsetY: tc.size * 0.5 + 8,
+          labelOpacity: 1, // 文字始终显示
+          lineWidth: inC ? 2.5 : 1.5,
+          stroke: inC ? '#FFFFFF' : t===1 ? 'rgba(255,255,255,0.5)' : '#1E293B',
+          shadowColor: inC ? sc.fill : undefined,
+          shadowBlur: inC ? 12 : 0,
+          opacity: dimmed ? 0.08 : t===3 ? 0.4 : t===2 ? 0.75 : 1,
         },
-      })),
-    };
+      };
+    });
+
+    const edges = d.links.map((l: GraphLink) => {
+      const ec = getEdgeSemanticConfig(l.typeId, l.semantics);
+      const s = typeof l.source==='string'?l.source:l.source.id;
+      const t = typeof l.target==='string'?l.target:l.target.id;
+      const inC = isCoreChainEdge(s, t);
+      const maxTier = Math.max(nodeTier(s, d.nodes.find(x=>x.id===s)?.typeId||''), nodeTier(t, d.nodes.find(x=>x.id===t)?.typeId||''));
+      return {
+        id: l.id, source: s, target: t,
+        style: {
+          stroke: inC ? '#FBBF24' : ec.color,
+          lineWidth: inC ? 3 : ec.width,
+          labelText: l.label,
+          labelFill: inC ? '#FBBF24' : '#94A3B8',
+          labelFontSize: 8,
+          labelOpacity: 1, // 文字始终显示
+          endArrow: true,
+          endArrowSize: inC ? 7 : 5,
+          lineDash: inC ? undefined : ec.dash,
+          opacity: inC ? 0.92 : maxTier>=3 ? 0.12 : 0.3,
+        },
+      };
+    });
+
+    return { nodes, edges };
   };
 
-  // 高亮状态更新
-  const updateHighlight = (graph: Graph, activeId: string | null) => {
-    const allNodes = graph.getNodeData();
-    const allEdges = graph.getEdgeData();
+  // 高亮：只改 opacity + stroke + 显示标签
+  const highlight = (g: Graph, id: string | null) => {
+    const nodes = g.getNodeData();
+    const edges = g.getEdgeData();
 
-    if (!activeId) {
-      // 恢复默认
-      allNodes.forEach((n: any) => {
-        graph.updateNodeData([
-          {
-            id: n.id,
-            style: { opacity: n.data?.isAggregate ? 1 : 0.95, labelOpacity: 1 },
-          },
-        ]);
-      });
-      allEdges.forEach((e: any) => {
-        graph.updateEdgeData([
-          {
-            id: e.id,
-            style: { opacity: 0.6, labelOpacity: 0.8 },
-          },
-        ]);
-      });
+    if (!id) {
+      g.updateNodeData(nodes.map((n: any) => {
+        const d = n.data;
+        return { id: n.id, style: { opacity: d.dimmed?0.08:d.tier===3?0.4:d.tier===2?0.75:1, labelOpacity: 0, shadowBlur: d.inChain?12:0, lineWidth: d.inChain?2.5:1.5, stroke: d.inChain?'#FFFFFF':undefined } };
+      }));
+      g.updateEdgeData(edges.map((e: any) => ({ id: e.id, style: { opacity: e.data?.inChain?0.92:0.3, labelOpacity: 0 } })));
       return;
     }
 
-    // 获取邻居
-    const neighbors = new Set<string>();
-    allEdges.forEach((e: any) => {
-      const s = typeof e.source === 'string' ? e.source : e.source.id;
-      const t = typeof e.target === 'string' ? e.target : e.target.id;
-      if (s === activeId) neighbors.add(t);
-      if (t === activeId) neighbors.add(s);
+    const nbrs = new Set<string>();
+    edges.forEach((e: any) => {
+      const s = typeof e.source==='string'?e.source:e.source.id;
+      const t = typeof e.target==='string'?e.target:e.target.id;
+      if (s===id) nbrs.add(t);
+      if (t===id) nbrs.add(s);
     });
 
-    allNodes.forEach((n: any) => {
-      const isActive = n.id === activeId || neighbors.has(n.id);
-      graph.updateNodeData([
-        {
-          id: n.id,
-          style: {
-            opacity: isActive ? 1 : 0.15,
-            labelOpacity: isActive ? 1 : 0.1,
-            lineWidth: n.id === activeId ? 3 : n.data?.isAggregate ? 2 : 1.5,
-            stroke: n.id === activeId ? '#FFFFFF' : n.data?.isAggregate ? 'rgba(255,255,255,0.4)' : '#0F172A',
-          },
-        },
-      ]);
-    });
+    g.updateNodeData(nodes.map((n: any) => {
+      if (n.id===id) return { id: n.id, style: { opacity: 1, labelOpacity: 1, shadowBlur: 20, lineWidth: 4, stroke: '#FFFFFF' } };
+      if (nbrs.has(n.id)) return { id: n.id, style: { opacity: 0.8, labelOpacity: 0.8, shadowBlur: 8 } };
+      return { id: n.id, style: { opacity: 0.06, labelOpacity: 0 } };
+    }));
 
-    allEdges.forEach((e: any) => {
-      const s = typeof e.source === 'string' ? e.source : e.source.id;
-      const t = typeof e.target === 'string' ? e.target : e.target.id;
-      const isActive = s === activeId || t === activeId;
-      graph.updateEdgeData([
-        {
-          id: e.id,
-          style: {
-            opacity: isActive ? 0.9 : 0.08,
-            lineWidth: isActive ? 2.5 : 1.5,
-            labelOpacity: isActive ? 1 : 0.05,
-          },
-        },
-      ]);
-    });
+    g.updateEdgeData(edges.map((e: any) => {
+      const s = typeof e.source==='string'?e.source:e.source.id;
+      const t = typeof e.target==='string'?e.target:e.target.id;
+      const rel = s===id || t===id;
+      return { id: e.id, style: { opacity: rel?1:0.02, labelOpacity: rel?0.7:0 } };
+    }));
   };
 
-  // 初始化 G6
   useEffect(() => {
-    if (!containerRef.current || width <= 0 || height <= 0) return;
+    if (!containerRef.current || width<=0 || height<=0) return;
 
-    const g6Data = convertData(data);
-
-    const graph = new Graph({
-      container: containerRef.current,
-      width,
-      height,
-      background: '#0B0F19',
-      data: g6Data,
-      node: {
-        style: {
-          cursor: 'pointer',
+    try {
+      const g6d = build(data);
+      const graph = new Graph({
+        container: containerRef.current, width, height, background: '#0B0F19',
+        data: g6d,
+        node: { style: { cursor: 'pointer' } },
+        edge: { style: { cursor: 'default' } },
+        layout: {
+          type: 'force',
+          linkDistance: 420, nodeStrength: -2000, edgeStrength: 0.08,
+          collideStrength: 3.5, collidePadding: 28,
+          alphaDecay: 0.008, velocityDecay: 0.18,
+          animated: false, // ← 根治闪烁：无动画，一次性渲染
+          iterations: 1500, preventOverlap: true,
         },
-      },
-      edge: {
-        style: {
-          cursor: 'default',
-        },
-      },
-      layout: {
-        type: 'force',
-        linkDistance: 200,
-        nodeStrength: -600,
-        edgeStrength: 0.3,
-        collideStrength: 1.0,
-        alphaDecay: 0.02,
-        velocityDecay: 0.4,
-        animated: true,
-        iterations: 600,
-        preventOverlap: true,
-        nodeSize: (d: any) => d.data?.isAggregate ? 48 : (d.data?.radius || 10) * 2 + 10,
-      },
-      behaviors: [
-        'drag-canvas',
-        'zoom-canvas',
-        'drag-element',
-        {
-          type: 'hover-activate',
-          enable: (event: any) => event.targetType === 'node',
-          degree: 1,
-          state: 'highlight',
-          onHover: (event: any) => {
-            if (event.targetType === 'node') {
-              updateHighlight(graph, event.target.id);
-            }
+        behaviors: [
+          'drag-canvas', 'zoom-canvas', 'drag-element',
+          {
+            type: 'hover-activate',
+            enable: (e: any) => e.targetType === 'node',
+            degree: 0, // 只高亮当前节点
+            state: 'hover', // 使用预定义 hover 态
           },
-          onHoverEnd: () => {
-            updateHighlight(graph, selectedRef.current || null);
-          },
-        },
-      ],
-      plugins: [],
-    });
+        ],
+        // 内置 tooltip 显示节点详情
+        plugins: [
+          {
+            type: 'tooltip',
+            key: 'tooltip',
+            trigger: 'pointermove',
+            itemType: 'node',
+            getContent: (_e: any, items: any[]) => {
+              const d = items[0]?.data;
+              if (!d) return '';
+              return `<div style="background:rgba(15,23,42,0.95);border:1px solid #334155;border-radius:6px;padding:8px 12px;color:#F1F5F9;font-size:12px;max-width:200px;">
+                <div style="font-weight:700;margin-bottom:4px;">${d.label}</div>
+                <div style="color:#94A3B8;font-size:11px;">${d.semantic} · ${d.domain}</div>
+              </div>`;
+            },
+          } as any,
+        ],
+      });
 
-    graphRef.current = graph;
+      graphRef.current = graph;
 
-    // 事件监听
-    graph.on('node:click', (event: any) => {
-      const nodeId = event.target.id;
-      onClickRef.current?.(nodeId);
-      updateHighlight(graph, nodeId);
-    });
+      graph.on('node:click', (event: any) => {
+        const id = event.target.id;
+        if (lastId.current === id) { lastId.current = null; highlight(graph, null); cb.current.onNodeClick?.(undefined); }
+        else { lastId.current = id; highlight(graph, id); cb.current.onNodeClick?.(id); }
+      });
+      graph.on('canvas:click', () => { lastId.current = null; highlight(graph, null); cb.current.onNodeClick?.(undefined); });
+      graph.on('node:contextmenu', (event: any) => { event.originalEvent?.preventDefault?.(); cb.current.onNodeContextMenu?.(event.target.id); });
 
-    graph.on('canvas:click', () => {
-      onClickRef.current?.(undefined as any);
-      updateHighlight(graph, null);
-    });
+      // 布局完成后 fitView（animated:false 后立即完成）
+      setTimeout(() => graph.fitView(), 100);
+    } catch (err) {
+      console.error('G6 init failed:', err);
+    }
 
-    // 初始适应视图
-    setTimeout(() => {
-      graph.fitView();
-    }, 200);
-
-    return () => {
-      graph.destroy();
-      graphRef.current = null;
-    };
+    return () => { graphRef.current?.destroy(); graphRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [width, height]);
 
-  // 数据更新
   useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph || data.nodes.length === 0) return;
+    const g = graphRef.current;
+    if (!g || data.nodes.length===0) return;
+    try {
+      g.setData(build(data));
+      g.render();
+      const cur = lastId.current;
+      setTimeout(() => { g.fitView(); if (cur) highlight(g, cur); }, 200);
+    } catch (err) { console.error('G6 update failed:', err); }
+  }, [data, activeDomains, activeTypes]);
 
-    const g6Data = convertData(data);
-    graph.setData(g6Data);
-    graph.render();
-  }, [data]);
-
-  // 选中节点更新
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-
-    if (selectedNodeId) {
-      updateHighlight(graph, selectedNodeId);
-      graph.focusElement(selectedNodeId, { duration: 400 });
-    } else {
-      updateHighlight(graph, null);
-    }
-  }, [selectedNodeId]);
-
-  return (
-    <div
-      ref={containerRef}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: `${width}px`,
-        height: `${height}px`,
-      }}
-    />
-  );
+  return <div ref={containerRef} style={{ position: 'absolute', top: 0, left: 0, width, height }} />;
 }
