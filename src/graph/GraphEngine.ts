@@ -29,7 +29,7 @@ import type {
 } from '@/graph/types';
 
 export interface GraphEngineOptions {
-  container: SVGSVGElement;
+  container: HTMLDivElement;
   width: number;
   height: number;
   config?: Partial<GraphRenderConfig>;
@@ -37,7 +37,8 @@ export interface GraphEngineOptions {
 }
 
 export class GraphEngine {
-  private svg: d3.Selection<SVGSVGElement, unknown, null, undefined>;
+  private svgEl!: SVGSVGElement;
+  private svg!: d3.Selection<SVGSVGElement, unknown, null, undefined>;
   private g!: d3.Selection<SVGGElement, unknown, null, undefined>;
   private zoomBehavior!: d3.ZoomBehavior<SVGSVGElement, unknown>;
   private simulation: d3.Simulation<GraphNode, undefined> | null = null;
@@ -54,13 +55,14 @@ export class GraphEngine {
   private height: number;
   private onEvent?: (event: GraphEvent) => void;
   private isDestroyed = false;
+  private container: HTMLDivElement;
 
   // D3 selections
   private linkSelection!: d3.Selection<SVGGElement, GraphLink, SVGGElement, unknown>;
   private nodeSelection!: d3.Selection<SVGGElement, GraphNode, SVGGElement, unknown>;
 
   constructor(options: GraphEngineOptions) {
-    this.svg = d3.select(options.container);
+    this.container = options.container;
     this.width = options.width;
     this.height = options.height;
     this.config = { ...DEFAULT_RENDER_CONFIG, ...options.config };
@@ -70,8 +72,22 @@ export class GraphEngine {
   }
 
   private initSVG(): void {
-    this.svg.selectAll('*').remove();
-    this.svg.attr('width', this.width).attr('height', this.height);
+    // 清空容器
+    this.container.innerHTML = '';
+    this.container.style.width = `${this.width}px`;
+    this.container.style.height = `${this.height}px`;
+    this.container.style.position = 'absolute';
+    this.container.style.top = '0';
+    this.container.style.left = '0';
+
+    // 创建 SVG 元素
+    this.svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.svgEl.setAttribute('width', String(this.width));
+    this.svgEl.setAttribute('height', String(this.height));
+    this.svgEl.style.display = 'block';
+    this.container.appendChild(this.svgEl);
+
+    this.svg = d3.select(this.svgEl);
 
     // 定义箭头标记
     const defs = this.svg.append('defs');
@@ -323,6 +339,7 @@ export class GraphEngine {
 
   private onTick(): void {
     if (this.isDestroyed) return;
+    // console.log('[GraphEngine] tick', this.nodes[0]?.x, this.nodes[0]?.y);
 
     // 更新连线
     this.linkSelection.selectAll<SVGLineElement, GraphLink>('.link-line')
@@ -565,11 +582,11 @@ export class GraphEngine {
   }
 
   private applyNodeStates(states: Map<EntityId, NodeRenderState>): void {
-    this.nodeSelection.each((d) => {
+    this.nodeSelection.each(function (d) {
       const state = states.get(d.id) || 'default';
       d.state = state;
 
-      const group = d3.select<SVGGElement, GraphNode>(this.nodeSelection.nodes()[this.nodes.indexOf(d)] as SVGGElement);
+      const group = d3.select(this as SVGGElement);
       const shape = group.select('.node-shape');
       const label = group.select('.node-label');
       const labelBg = group.select('.node-label-bg');
@@ -622,11 +639,11 @@ export class GraphEngine {
   }
 
   private applyLinkStates(states: Map<LinkId, LinkRenderState>): void {
-    this.linkSelection.each((d) => {
+    this.linkSelection.each(function (d) {
       const state = states.get(d.id) || 'default';
       d.state = state;
 
-      const group = d3.select<SVGGElement, GraphLink>(this.linkSelection.nodes()[this.links.indexOf(d)] as SVGGElement);
+      const group = d3.select(this as SVGGElement);
       const line = group.select('.link-line');
       const label = group.select('.link-label');
       const labelBg = group.select('.link-label-bg');

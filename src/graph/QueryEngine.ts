@@ -12,12 +12,16 @@ import type {
   NeighborResult,
   PathResult,
   ObjectQuery,
+  ObjectType,
+  LinkType,
 } from '@/ontology/types';
 import type { GraphData, GraphNode, GraphLink } from '@/graph/types';
 
 export class QueryEngine {
   private cache = new Map<string, unknown>();
   private storage: StorageAdapter;
+  private objectTypesCache: ObjectType[] | null = null;
+  private linkTypesCache: LinkType[] | null = null;
 
   constructor(storage: StorageAdapter) {
     this.storage = storage;
@@ -25,6 +29,20 @@ export class QueryEngine {
 
   clearCache(): void {
     this.cache.clear();
+  }
+
+  private async getCachedObjectTypes(): Promise<ObjectType[]> {
+    if (!this.objectTypesCache) {
+      this.objectTypesCache = await this.storage.getObjectTypes();
+    }
+    return this.objectTypesCache;
+  }
+
+  private async getCachedLinkTypes(): Promise<LinkType[]> {
+    if (!this.linkTypesCache) {
+      this.linkTypesCache = await this.storage.getLinkTypes();
+    }
+    return this.linkTypesCache;
   }
 
   // ==================== 基础查询 ====================
@@ -133,8 +151,30 @@ export class QueryEngine {
     if (options?.typeFilter?.length) query.typeIds = options.typeFilter;
     if (options?.searchQuery) query.searchQuery = options.searchQuery;
 
-    const objectsResult = await this.storage.getObjects(query);
+    const [objectsResult, objectTypes, linkTypes] = await Promise.all([
+      this.storage.getObjects(query),
+      this.getCachedObjectTypes(),
+      this.getCachedLinkTypes(),
+    ]);
+
     const objects = objectsResult.items;
+
+    // 构建类型查找表
+    const typeColorMap = new Map<string, string>();
+    const typeShapeMap = new Map<string, 'circle' | 'rect' | 'diamond' | 'hexagon'>();
+    for (const t of objectTypes) {
+      typeColorMap.set(t.id, t.color);
+      typeShapeMap.set(t.id, t.shape);
+    }
+
+    const linkColorMap = new Map<string, string>();
+    const linkStyleMap = new Map<string, 'solid' | 'dashed' | 'dotted' | 'double'>();
+    const linkNameMap = new Map<string, string>();
+    for (const t of linkTypes) {
+      linkColorMap.set(t.id, t.color);
+      linkStyleMap.set(t.id, t.style);
+      linkNameMap.set(t.id, t.displayName);
+    }
 
     const objectIds = new Set(objects.map((o) => o.id));
     const linksResult = await this.storage.getLinks({});
@@ -142,16 +182,9 @@ export class QueryEngine {
       (l) => objectIds.has(l.sourceId) && objectIds.has(l.targetId)
     );
 
-    const typeColors: Record<string, string> = {};
-    const typeShapes: Record<string, 'circle' | 'rect' | 'diamond' | 'hexagon'> = {};
-
     const nodes: GraphNode[] = objects.map((obj) => {
-      if (!typeColors[obj.typeId]) {
-        // 延迟获取类型颜色
-        const type = (this.storage as any).objectTypes?.find?.((t: any) => t.id === obj.typeId);
-        typeColors[obj.typeId] = type?.color || '#64748B';
-        typeShapes[obj.typeId] = type?.shape || 'circle';
-      }
+      const color = typeColorMap.get(obj.typeId) || '#64748B';
+      const shape = typeShapeMap.get(obj.typeId) || 'circle';
 
       return {
         id: obj.id,
@@ -159,8 +192,8 @@ export class QueryEngine {
         label: obj.displayName,
         domain: obj.domain,
         radius: obj.isAggregate ? 24 : obj.importance * 12 + 4,
-        color: typeColors[obj.typeId] || '#64748B',
-        shape: typeShapes[obj.typeId] || 'circle',
+        color,
+        shape,
         isAggregate: obj.isAggregate,
         importance: obj.importance,
         level: obj.level,
@@ -170,16 +203,10 @@ export class QueryEngine {
       };
     });
 
-    const linkStyles: Record<string, { color: string; style: 'solid' | 'dashed' | 'dotted' | 'double' }> = {};
-
     const graphLinks: GraphLink[] = links.map((link) => {
-      if (!linkStyles[link.typeId]) {
-        const type = (this.storage as any).linkTypes?.find?.((t: any) => t.id === link.typeId);
-        linkStyles[link.typeId] = {
-          color: type?.color || '#94A3B8',
-          style: type?.style || 'solid',
-        };
-      }
+      const linkColor = linkColorMap.get(link.typeId) || '#94A3B8';
+      const linkStyle = linkStyleMap.get(link.typeId) || 'solid';
+      const linkLabel = linkNameMap.get(link.typeId) || '';
 
       return {
         id: link.id,
@@ -187,10 +214,10 @@ export class QueryEngine {
         semantics: (link as any).semantics || 'association',
         source: link.sourceId,
         target: link.targetId,
-        label: (this.storage as any).linkTypes?.find?.((t: any) => t.id === link.typeId)?.displayName || '',
+        label: linkLabel,
         width: 1.5,
-        color: linkStyles[link.typeId]?.color || '#94A3B8',
-        style: linkStyles[link.typeId]?.style || 'solid',
+        color: linkColor,
+        style: linkStyle,
         directed: true,
         state: 'default',
         ontologyLink: link,

@@ -1,23 +1,14 @@
 /**
  * App.tsx - 女鞋总厂知识图谱主入口
- * 
- * 架构层级：
- * App (状态管理) → GraphCanvas (D3渲染) + ObjectExplorer (详情面板) + FilterPanel (筛选) + ViewSwitcher (导航)
- * 
- * 数据流：
- * 1. App 初始化 StorageAdapter + QueryEngine
- * 2. 用户操作 → 状态更新 → 筛选/查询 → GraphData 生成 → GraphCanvas 重新渲染
- * 3. 节点点击 → ObjectExplorer 展示详情
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { GraphCanvas } from '@/components/GraphCanvas';
+import { G6GraphCanvas } from '@/components/G6GraphCanvas';
 import { ObjectExplorer } from '@/components/ObjectExplorer';
 import { FilterPanel } from '@/components/FilterPanel';
 import { ViewSwitcher } from '@/components/ViewSwitcher';
 import { InMemoryAdapter } from '@/storage/InMemoryAdapter';
 import { QueryEngine } from '@/graph/QueryEngine';
-import type { StorageAdapter } from '@/storage/types';
 import type { EntityId, BusinessDomain, FilterState } from '@/types';
 import type { GraphMode } from '@/graph/types';
 import type { OntologyObject, OntologyLink } from '@/ontology/types';
@@ -31,15 +22,18 @@ import { allEntities, allLinks } from '@/data/shoeFactoryData';
 import './App.css';
 
 export default function App() {
-  const [, setAdapter] = useState<StorageAdapter | null>(null);
   const [queryEngine, setQueryEngine] = useState<QueryEngine | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<EntityId | undefined>(undefined);
   const [mode, setMode] = useState<GraphMode>('map');
   const [breadcrumb, setBreadcrumb] = useState<EntityId[]>([]);
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
   const [isLoading, setIsLoading] = useState(true);
+  const [searchResults, setSearchResults] = useState<EntityId[]>([]);
+  const [windowSize, setWindowSize] = useState({ width: 1200, height: 800 });
 
-  // 筛选状态
+  const canvasWidth = Math.max(windowSize.width - (selectedNodeId ? 320 : 0), 400);
+  const canvasHeight = Math.max(windowSize.height, 400);
+
   const [filters, setFilters] = useState<FilterState>({
     domains: [],
     objectTypes: [],
@@ -48,79 +42,137 @@ export default function App() {
   });
 
   const registryRef = useRef(new OntologyRegistryImpl());
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const engineRef = useRef<QueryEngine | null>(null);
+
+  // ==================== 窗口尺寸 ====================
+  useEffect(() => {
+    const update = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
   // ==================== 初始化 ====================
-
   useEffect(() => {
     const init = async () => {
-      const registry = registryRef.current;
+      try {
+        const registry = registryRef.current;
 
-      // 注册本体定义
-      for (const ot of shoeFactoryObjectTypes) {
-        registry.registerObjectType(ot);
-        globalOntologyRegistry.registerObjectType(ot);
+        for (const ot of shoeFactoryObjectTypes) {
+          registry.registerObjectType(ot);
+          globalOntologyRegistry.registerObjectType(ot);
+        }
+        for (const lt of shoeFactoryLinkTypes) {
+          registry.registerLinkType(lt);
+          globalOntologyRegistry.registerLinkType(lt);
+        }
+        for (const at of shoeFactoryActionTypes) {
+          registry.registerActionType(at);
+          globalOntologyRegistry.registerActionType(at);
+        }
+
+        const memAdapter = new InMemoryAdapter();
+        memAdapter.registerObjectTypes(shoeFactoryObjectTypes);
+        memAdapter.registerLinkTypes(shoeFactoryLinkTypes);
+        memAdapter.registerActionTypes(shoeFactoryActionTypes);
+        await memAdapter.initialize();
+        await memAdapter.bulkImport(allEntities, allLinks);
+
+        const engine = new QueryEngine(memAdapter);
+        engineRef.current = engine;
+        setQueryEngine(engine);
+        setIsLoading(false);
+      } catch (err) {
+        console.error('Init failed:', err);
+        setIsLoading(false);
       }
-      for (const lt of shoeFactoryLinkTypes) {
-        registry.registerLinkType(lt);
-        globalOntologyRegistry.registerLinkType(lt);
-      }
-      for (const at of shoeFactoryActionTypes) {
-        registry.registerActionType(at);
-        globalOntologyRegistry.registerActionType(at);
-      }
-
-      // 初始化存储适配器
-      const memAdapter = new InMemoryAdapter();
-      memAdapter.registerObjectTypes(shoeFactoryObjectTypes);
-      memAdapter.registerLinkTypes(shoeFactoryLinkTypes);
-      memAdapter.registerActionTypes(shoeFactoryActionTypes);
-      await memAdapter.initialize();
-      await memAdapter.bulkImport(allEntities, allLinks);
-
-      // 初始化查询引擎
-      const engine = new QueryEngine(memAdapter);
-
-      setAdapter(memAdapter);
-      setQueryEngine(engine);
-      setIsLoading(false);
     };
 
     init();
   }, []);
 
   // ==================== 图谱数据生成 ====================
+  useEffect(() => {
+    if (!engineRef.current) return;
 
-  const refreshGraphData = useCallback(async () => {
-    if (!queryEngine) return;
+    const refresh = async () => {
+      try {
+        const data = await engineRef.current!.toGraphData({
+          domainFilter: filters.domains.length > 0 ? filters.domains : undefined,
+          typeFilter: filters.objectTypes.length > 0 ? filters.objectTypes : undefined,
+          searchQuery: filters.searchQuery || undefined,
+        });
 
-    const data = await queryEngine.toGraphData({
-      domainFilter: filters.domains.length > 0 ? filters.domains : undefined,
-      typeFilter: filters.objectTypes.length > 0 ? filters.objectTypes : undefined,
-      searchQuery: filters.searchQuery || undefined,
-    });
+        let nodes = data.nodes;
+        if (filters.importanceMin > 0) {
+          nodes = nodes.filter((n) => n.importance >= filters.importanceMin);
+        }
 
-    // 重要性过滤
-    let nodes = data.nodes;
-    if (filters.importanceMin > 0) {
-      nodes = nodes.filter((n) => n.importance >= filters.importanceMin);
-    }
+        const nodeIds = new Set(nodes.map((n) => n.id));
+        const links = data.links.filter(
+          (l) => {
+            const sid = typeof l.source === 'string' ? l.source : l.source.id;
+            const tid = typeof l.target === 'string' ? l.target : l.target.id;
+            return nodeIds.has(sid) && nodeIds.has(tid);
+          }
+        );
 
-    // 筛选后重新过滤链接
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const links = data.links.filter(
-      (l) => nodeIds.has(typeof l.source === 'string' ? l.source : l.source.id) &&
-             nodeIds.has(typeof l.target === 'string' ? l.target : l.target.id)
-    );
+        setGraphData({ nodes, links });
+      } catch (err) {
+        console.error('Refresh graph data failed:', err);
+      }
+    };
 
-    setGraphData({ nodes, links });
+    refresh();
   }, [queryEngine, filters]);
 
-  useEffect(() => {
-    refreshGraphData();
-  }, [refreshGraphData]);
+  // ==================== 搜索功能 ====================
+  const performSearch = useCallback(async (query: string) => {
+    if (!engineRef.current || !query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    try {
+      const results = await engineRef.current.toGraphData({
+        searchQuery: query,
+      });
+
+      const matchedIds = results.nodes.map((n) => n.id);
+      setSearchResults(matchedIds);
+      setMode('search');
+
+      if (matchedIds.length > 0) {
+        const firstId = matchedIds[0];
+        setSelectedNodeId(firstId);
+        setBreadcrumb((prev) => (prev.includes(firstId) ? prev : [...prev, firstId]));
+      }
+    } catch (err) {
+      console.error('Search failed:', err);
+    }
+  }, []);
+
+  const onSearchChange = useCallback((query: string) => {
+    setFilters((prev) => ({ ...prev, searchQuery: query }));
+
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+    }
+
+    if (query.trim()) {
+      searchTimerRef.current = setTimeout(() => {
+        performSearch(query);
+      }, 300);
+    } else {
+      setSearchResults([]);
+      setMode('map');
+    }
+  }, [performSearch]);
 
   // ==================== 筛选操作 ====================
-
   const toggleDomain = useCallback((domain: BusinessDomain) => {
     setFilters((prev) => {
       const exists = prev.domains.includes(domain);
@@ -136,53 +188,33 @@ export default function App() {
       const exists = prev.objectTypes.includes(typeId);
       return {
         ...prev,
-        objectTypes: exists
-          ? prev.objectTypes.filter((t) => t !== typeId)
-          : [...prev.objectTypes, typeId],
+        objectTypes: exists ? prev.objectTypes.filter((t) => t !== typeId) : [...prev.objectTypes, typeId],
       };
     });
   }, []);
 
-  const setSearchQuery = useCallback((query: string) => {
-    setFilters((prev) => ({ ...prev, searchQuery: query }));
-  }, []);
-
-  const setImportanceMin = useCallback((value: number) => {
+  const onImportanceChange = useCallback((value: number) => {
     setFilters((prev) => ({ ...prev, importanceMin: value }));
   }, []);
 
   const resetFilters = useCallback(() => {
     setFilters({ domains: [], objectTypes: [], searchQuery: '', importanceMin: 0 });
+    setSearchResults([]);
+    setMode('map');
   }, []);
 
   // ==================== 节点交互 ====================
-
-  const handleNodeClick = useCallback(
-    async (nodeId: EntityId) => {
-      setSelectedNodeId(nodeId);
-      setMode('investigate');
-      setBreadcrumb((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
-
-      // 如果搜索模式，清除搜索
-      if (mode === 'search') {
-        setFilters((prev) => ({ ...prev, searchQuery: '' }));
-      }
-    },
-    [mode]
-  );
-
-  const handleNodeHover = useCallback((_nodeId: EntityId | null) => {
-    // hover state removed for now
+  const handleNodeClick = useCallback((nodeId: EntityId) => {
+    setSelectedNodeId(nodeId);
+    setMode('investigate');
+    setBreadcrumb((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
   }, []);
 
-  const handleNavigateToEntity = useCallback(
-    async (id: EntityId) => {
-      setSelectedNodeId(id);
-      setMode('breadcrumb');
-      setBreadcrumb((prev) => (prev.includes(id) ? prev : [...prev, id]));
-    },
-    []
-  );
+  const handleNavigateToEntity = useCallback((id: EntityId) => {
+    setSelectedNodeId(id);
+    setMode('breadcrumb');
+    setBreadcrumb((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
 
   const handleBreadcrumbClick = useCallback((index: number) => {
     setBreadcrumb((prev) => {
@@ -196,29 +228,22 @@ export default function App() {
     setMode(newMode);
     if (newMode === 'map') {
       setSelectedNodeId(undefined);
+      setSearchResults([]);
     }
   }, []);
 
   const handleAction = useCallback((actionId: string, entityId: EntityId) => {
     console.log(`Action ${actionId} on ${entityId}`);
-    // TODO: 实现具体动作
   }, []);
 
   // ==================== 辅助函数 ====================
+  const getObject = useCallback((id: EntityId): OntologyObject | undefined => {
+    return allEntities.find((e) => e.id === id);
+  }, []);
 
-  const getObject = useCallback(
-    (id: EntityId): OntologyObject | undefined => {
-      return allEntities.find((e) => e.id === id);
-    },
-    []
-  );
-
-  const getLinksForObject = useCallback(
-    (id: EntityId): OntologyLink[] => {
-      return allLinks.filter((l) => l.sourceId === id || l.targetId === id);
-    },
-    []
-  );
+  const getLinksForObject = useCallback((id: EntityId): OntologyLink[] => {
+    return allLinks.filter((l) => l.sourceId === id || l.targetId === id);
+  }, []);
 
   const breadcrumbLabels = useMemo(() => {
     const labels: Record<string, string> = {};
@@ -238,7 +263,6 @@ export default function App() {
   }, []);
 
   // ==================== 渲染 ====================
-
   if (isLoading) {
     return (
       <div className="h-screen w-screen bg-slate-950 flex items-center justify-center">
@@ -253,25 +277,27 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-slate-950 flex overflow-hidden">
       {/* 主画布区域 */}
-      <div className="flex-1 relative">
-        <GraphCanvas
-          data={graphData}
-          width={typeof window !== 'undefined' ? window.innerWidth - (selectedNodeId ? 320 : 0) : 1200}
-          height={typeof window !== 'undefined' ? window.innerHeight : 800}
-          onNodeClick={handleNodeClick}
-          onNodeHover={handleNodeHover}
-          selectedNodeId={selectedNodeId}
-        />
+      <div className="flex-1 relative" style={{ minWidth: 0 }}>
+        {graphData.nodes.length > 0 && (
+          <G6GraphCanvas
+            key={`g6-${canvasWidth}x${canvasHeight}`}
+            data={graphData}
+            width={canvasWidth}
+            height={canvasHeight}
+            onNodeClick={handleNodeClick}
+            selectedNodeId={selectedNodeId}
+          />
+        )}
 
         {/* 筛选面板 */}
         <FilterPanel
-          domains={Object.values(filters.domains)}
+          domains={['研发设计', '生产制造', '供应链管理', '质量管控', '业务系统支撑', '市场渠道销售', '订单物流报关', '成本利润核算', '经营风险管控']}
           selectedDomains={filters.domains}
           onDomainToggle={toggleDomain}
           searchQuery={filters.searchQuery}
-          onSearchChange={setSearchQuery}
+          onSearchChange={onSearchChange}
           importanceMin={filters.importanceMin}
-          onImportanceChange={setImportanceMin}
+          onImportanceChange={onImportanceChange}
           objectTypeOptions={objectTypeOptions}
           selectedTypes={filters.objectTypes}
           onTypeToggle={toggleType}
@@ -288,6 +314,34 @@ export default function App() {
           onFitView={() => {}}
           onResetView={() => {}}
         />
+
+        {/* 搜索结果显示 */}
+        {mode === 'search' && searchResults.length > 0 && (
+          <div className="absolute top-20 right-4 z-10 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-4 py-3 max-w-xs">
+            <p className="text-xs text-slate-400 mb-2">
+              搜索结果 <span className="text-slate-200 font-medium">{searchResults.length}</span> 个实体
+            </p>
+            <div className="max-h-48 overflow-y-auto space-y-1">
+              {searchResults.slice(0, 10).map((id) => {
+                const obj = getObject(id);
+                if (!obj) return null;
+                return (
+                  <button
+                    key={id}
+                    className="w-full text-left flex items-center gap-2 p-1.5 rounded hover:bg-slate-800 transition-colors"
+                    onClick={() => handleNodeClick(id)}
+                  >
+                    <div
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: shoeFactoryObjectTypes.find((t) => t.id === obj.typeId)?.color || '#64748B' }}
+                    />
+                    <span className="text-xs text-slate-300 truncate">{obj.displayName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 底部统计 */}
         <div className="absolute bottom-4 left-4 z-10 bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-3">
@@ -313,16 +367,18 @@ export default function App() {
 
       {/* 右侧对象浏览器 */}
       {selectedNodeId && (
-        <ObjectExplorer
-          entityId={selectedNodeId}
-          getObject={getObject}
-          getLinksForObject={getLinksForObject}
-          getObjectType={(id) => registryRef.current.getObjectType(id)}
-          getLinkType={(id) => registryRef.current.getLinkType(id)}
-          getActionTypesForObject={(typeId) => registryRef.current.listActionTypesForObject(typeId)}
-          onNavigateToEntity={handleNavigateToEntity}
-          onAction={handleAction}
-        />
+        <div className="flex-shrink-0" style={{ width: 320 }}>
+          <ObjectExplorer
+            entityId={selectedNodeId}
+            getObject={getObject}
+            getLinksForObject={getLinksForObject}
+            getObjectType={(id) => registryRef.current.getObjectType(id)}
+            getLinkType={(id) => registryRef.current.getLinkType(id)}
+            getActionTypesForObject={(typeId) => registryRef.current.listActionTypesForObject(typeId)}
+            onNavigateToEntity={handleNavigateToEntity}
+            onAction={handleAction}
+          />
+        </div>
       )}
     </div>
   );
