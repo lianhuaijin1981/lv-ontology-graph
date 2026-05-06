@@ -225,9 +225,9 @@ export const DOMAIN_COLORS: Record<string, string> = {
   '经营风险管控': '#DC2626',
 };
 
-// ==================== 核心流程链路定义 ====================
+// ==================== 核心流程链路定义（保留向后兼容） ====================
 
-/** 生产主链路（皮料→裁断→车缝→成型→质检） */
+/** 生产主链路（皮料→裁断→车缝→成型→质检） — 已被 processFlows.ts 中的端到端流程替代 */
 export const MAIN_PRODUCTION_CHAIN = [
   'scm-02', 'mfg-01', 'mfg-04', 'mfg-02', 'mfg-05', 'mfg-03', 'mfg-06', 'mfg-07', 'rd-03',
 ];
@@ -242,11 +242,24 @@ export const COST_CHAIN = [
   'scm-02', 'cost-01', 'cost-06', 'cost-02', 'risk-03',
 ];
 
-/** 判断节点是否在核心链路中 */
+/**
+ * 所有核心链路的节点ID合集（含新旧）
+ * 新增: processFlows.ts 中3条端到端流程的节点
+ * 保留旧数组用于 map 模式过滤
+ */
+import { ALL_PROCESS_FLOWS } from './processFlows';
+
+/** 完整的核心节点集合（旧链路 + 新流程） */
+export const ALL_CORE_NODE_IDS = new Set([
+  ...MAIN_PRODUCTION_CHAIN,
+  ...ORDER_CHAIN,
+  ...COST_CHAIN,
+  ...ALL_PROCESS_FLOWS.flatMap(f => f.nodeIds),
+]);
+
+/** 判断节点是否在核心链路中（含新旧流程） */
 export function isInCoreChain(nodeId: string): boolean {
-  return MAIN_PRODUCTION_CHAIN.includes(nodeId)
-    || ORDER_CHAIN.includes(nodeId)
-    || COST_CHAIN.includes(nodeId);
+  return ALL_CORE_NODE_IDS.has(nodeId);
 }
 
 /** 判断边是否在核心链路中 */

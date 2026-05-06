@@ -8,6 +8,9 @@ import type { GraphExportHandle } from '@/components/D3GraphCanvas';
 import { ObjectExplorer } from '@/components/ObjectExplorer';
 import { FilterPanel } from '@/components/FilterPanel';
 import { ViewSwitcher } from '@/components/ViewSwitcher';
+import { ScenePanel } from '@/components/ScenePanel';
+import { SceneShowcase } from '@/components/SceneShowcase';
+import { FlowStoryBar } from '@/components/FlowStoryBar';
 import { InMemoryAdapter } from '@/storage/InMemoryAdapter';
 import { QueryEngine } from '@/graph/QueryEngine';
 import type { EntityId, BusinessDomain, FilterState } from '@/types';
@@ -19,9 +22,11 @@ import {
   shoeFactoryLinkTypes,
   shoeFactoryActionTypes,
 } from '@/ontology/ShoeFactoryOntology';
-import { allEntities, allLinks } from '@/data/shoeFactoryData';
-import { RotateCcw, Download, FileJson } from 'lucide-react';
+import { allEntities, allLinks } from '@/data';
+import { RotateCcw, Download, FileJson, Sparkles } from 'lucide-react';
 import { SEMANTIC_LEGEND, NODE_SEMANTIC_CONFIG, MAIN_PRODUCTION_CHAIN, ORDER_CHAIN, COST_CHAIN } from '@/data/businessSemantic';
+import { ALL_PROCESS_FLOWS, type ProcessFlow, findFlowForNode } from '@/data/processFlows';
+import { ALL_SCENES, getSceneById, type SceneResult } from '@/data/scenes';
 import './App.css';
 
 export default function App() {
@@ -35,6 +40,12 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<EntityId[]>([]);
   const [windowSize, setWindowSize] = useState({ width: 1200, height: 800 });
   const [viewMode, setViewMode] = useState<'map' | 'full'>('full'); // 默认全量视图
+  const [activeFlow, setActiveFlow] = useState<ProcessFlow | null>(null);
+  const [flowCurrentStep, setFlowCurrentStep] = useState<number>(0); // 0=不高亮，>=1表示当前步骤
+  const [sceneResult, setSceneResult] = useState<SceneResult | null>(null);
+  const [showScenePanel, setShowScenePanel] = useState(false);
+  const [showShowcase, setShowShowcase] = useState(true); // 场景演示中心显隐
+  const [showcaseCollapsed, setShowcaseCollapsed] = useState(false); // 演示中心收起状态
 
   // 根据视图模式过滤图谱数据
   const filteredGraphData = useMemo(() => {
@@ -287,20 +298,58 @@ export default function App() {
   // mode 状态保留用于面包屑逻辑，不再用于视图切换（视图由 viewMode 控制）
 
   const handleAction = useCallback((actionId: string, entityId: EntityId) => {
-    // TODO: 实现真正的动作执行逻辑，这里先展示反馈
-    const actionName = {
+    const obj = allEntities.find((e) => e.id === entityId);
+    const entityName = obj?.displayName || entityId;
+
+    // 场景分析模式：根据 actionId 匹配场景
+    if (actionId.startsWith('scene-')) {
+      const sceneId = actionId.replace('scene-', '');
+      const scene = getSceneById(sceneId);
+      if (!scene) { alert(`未知场景: ${sceneId}`); return; }
+      const result = scene.analyze(entityId);
+      setSceneResult(result);
+      setShowScenePanel(true);
+      if (result.flow) {
+        setActiveFlow(result.flow);
+        setFlowCurrentStep(result.flowStep || result.flow.steps.length);
+      }
+      console.log(`[Scene] ${scene.name} on ${entityName}`, result);
+      return;
+    }
+
+    // 兼容旧动作映射
+    const actionNameMap: Record<string, string> = {
       drillDown: '穿透分析',
       traceSource: '溯源追踪',
       exportData: '导出数据',
       viewHistory: '查看历史',
       calculateROI: '计算 ROI',
-    }[actionId] || actionId;
-    
-    const obj = allEntities.find((e) => e.id === entityId);
-    const entityName = obj?.displayName || entityId;
-    
+    };
+    const actionName = actionNameMap[actionId] || actionId;
+
     alert(`🎯 执行动作: ${actionName}\n📌 対象: ${entityName}`);
-    console.log(`[Action] ${actionId} on ${entityId}`, obj);
+    console.log(`[Action] ${actionId} on ${entityName}`, obj);
+  }, []);
+
+  /** 运行指定场景 */
+  const handleRunScene = useCallback((sceneId: string, targetEntityId?: EntityId) => {
+    const targetId = targetEntityId || selectedNodeId;
+    if (!targetId) return;
+    const scene = getSceneById(sceneId);
+    if (!scene) return;
+    const result = scene.analyze(targetId);
+    setSceneResult(result);
+    setShowScenePanel(true);
+    if (result.flow) {
+      setActiveFlow(result.flow);
+      setFlowCurrentStep(result.flowStep || result.flow.steps.length);
+    }
+  }, [selectedNodeId]);
+
+  /** 关闭场景面板 */
+  const handleCloseScenePanel = useCallback(() => {
+    setShowScenePanel(false);
+    setSceneResult(null);
   }, []);
 
   // ==================== 辅助函数 ====================
@@ -345,6 +394,22 @@ export default function App() {
     <div className="h-screen w-screen bg-slate-950 flex overflow-hidden">
       {/* 主画布区域 */}
       <div className="flex-1 relative" style={{ minWidth: 0 }}>
+        {/* 场景演示中心（顶部悬浮） */}
+        {showShowcase && (
+          <SceneShowcase
+            selectedNodeId={selectedNodeId}
+            selectedTypeId={allEntities.find(e => e.id === selectedNodeId)?.typeId}
+            onLaunchScene={(sceneId) => {
+              // 使用默认节点或当前选中节点启动场景
+              const targetId = selectedNodeId || 'sales-07'; // 默认用客户下单节点
+              handleRunScene(sceneId, targetId);
+              setShowShowcase(false); // 启动后收起演示中心
+            }}
+            onClose={() => setShowShowcase(false)}
+            collapsed={showcaseCollapsed}
+            onToggleCollapse={() => setShowcaseCollapsed(!showcaseCollapsed)}
+          />
+        )}
         {filteredGraphData.nodes.length > 0 && (
           <D3GraphCanvas
             ref={exportRef}
@@ -357,6 +422,8 @@ export default function App() {
             activeDomains={filters.domains}
             activeTypes={filters.objectTypes}
             focusNodeId={focusNodeId}
+            activeFlow={activeFlow}
+            flowCurrentStep={flowCurrentStep}
           />
         )}
 
@@ -459,6 +526,15 @@ export default function App() {
             </button>
           </div>
 
+          {/* 流程故事线（替代原来的小按钮组） */}
+          <FlowStoryBar
+            activeFlow={activeFlow}
+            currentStep={flowCurrentStep}
+            onFlowChange={(flow) => { setActiveFlow(flow); setFlowCurrentStep(flow.steps.length); }}
+            onStepChange={setFlowCurrentStep}
+            onClose={() => { setActiveFlow(null); setFlowCurrentStep(0); }}
+          />
+
           {/* 全局重置视图 */}
           <button
             onClick={handleResetView}
@@ -510,9 +586,45 @@ export default function App() {
             })}
           </div>
 
-          {/* 右键提示 */}
-          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 text-[10px] text-slate-500">
-            左键选中 · 右键详情 · 空白取消
+          {/* 场景快捷入口（选中节点时显示） */}
+          {selectedNodeId && (
+            <div className="bg-slate-900/95 backdrop-blur border border-cyan-500/20 rounded-lg shadow-xl px-3 py-2 flex items-center gap-2">
+              <span className="text-[10px] text-cyan-400">场景</span>
+              {(() => {
+                const obj = allEntities.find((e) => e.id === selectedNodeId);
+                const typeId = obj?.typeId || '';
+                // 推荐场景
+                const recScenes = ALL_SCENES.filter(s => s.triggerTypeIds.includes(typeId));
+                const displayScenes = recScenes.length > 0 ? recScenes : ALL_SCENES;
+                return displayScenes.slice(0, 5).map(scene => (
+                  <button
+                    key={scene.id}
+                    onClick={() => handleRunScene(scene.id)}
+                    className="px-2 py-[3px] rounded text-[10px] font-medium bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-300 transition-all flex items-center gap-1"
+                    title={scene.description}
+                  >
+                    <span>{scene.icon}</span>
+                    <span>{scene.name}</span>
+                  </button>
+                ));
+              })()}
+            </div>
+          )}
+
+          {/* 右键提示 + 场景入口 */}
+          <div className="flex items-center gap-2">
+            <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 text-[10px] text-slate-500">
+              左键选中 · 右键详情 · 空白取消
+            </div>
+            {!showShowcase && (
+              <button
+                onClick={() => { setShowShowcase(true); setShowcaseCollapsed(false); }}
+                className="bg-slate-900/95 backdrop-blur border border-cyan-500/30 rounded-lg shadow-xl px-3 py-2 flex items-center gap-1.5 text-[10px] font-medium text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-400/50 transition-all"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                场景演示
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -530,6 +642,20 @@ export default function App() {
             onNavigateToEntity={handleNavigateToEntity}
             onAction={handleAction}
             onClose={handleCloseExplorer}
+          />
+        </div>
+      )}
+
+      {/* 场景分析面板 */}
+      {showScenePanel && sceneResult && selectedNodeId && (
+        <div className="flex-shrink-0" style={{ width: 360 }}>
+          <ScenePanel
+            entityId={selectedNodeId}
+            typeId={allEntities.find(e => e.id === selectedNodeId)?.typeId}
+            entityName={allEntities.find(e => e.id === selectedNodeId)?.displayName}
+            result={sceneResult}
+            onRunScene={(sid) => handleRunScene(sid)}
+            onClose={handleCloseScenePanel}
           />
         </div>
       )}

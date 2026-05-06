@@ -21,6 +21,14 @@ import {
   isInCoreChain,
   isCoreChainEdge,
 } from '@/data/businessSemantic';
+import {
+  computeDomainZones,
+  assignNodePositions,
+  createLayeredSimulation,
+  type DomainZone,
+  TIERS,
+} from '@/layout/domainLayout';
+import type { ProcessFlow } from '@/data/processFlows';
 
 // ==================== 导出句柄类型（供父组件调用） ====================
 export interface GraphExportHandle {
@@ -38,6 +46,10 @@ interface Props {
   activeTypes?: string[];
   /** 搜索命中后自动 FitView 定位的节点 ID */
   focusNodeId?: EntityId;
+  /** 流程高亮模式：传入流程定义 + 当前步骤(0=不高亮) */
+  activeFlow?: ProcessFlow | null;
+  /** 流程当前步骤（1-based），用于区分已完成/进行中/待执行 */
+  flowCurrentStep?: number;
 }
 
 const TIER = {
@@ -60,7 +72,7 @@ function dimColor(hex: string, f: number): string {
 // ==================== 组件（使用 forwardRef 暴露导出句柄） ====================
 
 export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3GraphCanvas(
-  { data, width, height, onNodeClick, onNodeContextMenu, activeDomains = [], activeTypes = [], focusNodeId },
+  { data, width, height, onNodeClick, onNodeContextMenu, activeDomains = [], activeTypes = [], focusNodeId, activeFlow = null, flowCurrentStep = 0 },
   ref
 ) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -216,6 +228,22 @@ export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3Gra
       target: nodeMap.get(l.target)!,
     }));
 
+    // ========== 分层布局：计算板块分区 + 节点初始位置 ==========
+    const padding = 60; // 画布边距
+    const zones = computeDomainZones(width, height, padding);
+    const layoutInfos = assignNodePositions(data.nodes, zones, Date.now() % 1000);
+
+    // 将布局位置写入节点
+    const infoMap = new Map(layoutInfos.map(info => [info.id, info]));
+    nodes.forEach((n: any) => {
+      const info = infoMap.get(n.id);
+      if (info) {
+        n.x = info.x;
+        n.y = info.y;
+      }
+    });
+    console.log('[D3Debug] nodes count:', nodes.length, 'links count:', links.length);
+
     // 创建组
     const g = svg.append('g');
 
@@ -225,6 +253,61 @@ export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3Gra
       .on('zoom', (event) => g.attr('transform', event.transform.toString()));
     svg.call(zoom as any).on('dblclick.zoom', null);
     zoomRef.current = zoom;
+
+    // ========== 绘制板块分区背景 ==========
+    const zoneGroup = g.selectAll('.domain-zone')
+      .data(zones)
+      .enter()
+      .append('g')
+      .attr('class', 'domain-zone');
+
+    zoneGroup.append('rect')
+      .attr('x', (d: DomainZone) => d.cx - d.width / 2)
+      .attr('y', (d: DomainZone) => d.cy - d.height / 2)
+      .attr('width', (d: DomainZone) => d.width)
+      .attr('height', (d: DomainZone) => d.height)
+      .attr('rx', 12)
+      .attr('ry', 12)
+      .attr('fill', (d: DomainZone) => d.color)
+      .attr('stroke', (d: DomainZone) => d.borderColor)
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '4,3')
+      .style('opacity', 0.6);
+
+    // 板块标题
+    zoneGroup.append('text')
+      .attr('x', (d: DomainZone) => d.cx - d.width / 2 + 10)
+      .attr('y', (d: DomainZone) => d.cy - d.height / 2 + 20)
+      .attr('fill', (d: DomainZone) => d.borderColor.replace(/[\d.]+\)$/, '0.55)'))
+      .attr('font-size', '10px')
+      .attr('font-weight', '600')
+      .attr('font-family', 'system-ui, -apple-system, sans-serif')
+      .attr('letter-spacing', '0.5px')
+      .text((d: DomainZone) => d.label);
+
+    // 层级分隔线（可选视觉引导）
+    const _innerH = height - padding * 2;
+    TIERS.forEach((tierCfg, tierIdx) => {
+      if (tierIdx < TIERS.length - 1) {
+        const y = padding + _innerH * (tierCfg.yRatio + tierCfg.heightRatio);
+        g.append('line')
+          .attr('x1', padding)
+          .attr('y1', y)
+          .attr('x2', width - padding)
+          .attr('y2', y)
+          .attr('stroke', 'rgba(71,85,105,0.25)')
+          .attr('stroke-dasharray', '2,8')
+          .attr('stroke-width', 1);
+        // 层级标签
+        g.append('text')
+          .attr('x', padding + 6)
+          .attr('y', y - 6)
+          .attr('fill', 'rgba(100,116,139,0.35)')
+          .attr('font-size', '9px')
+          .attr('font-family', 'system-ui, -apple-system, sans-serif')
+          .text(tierCfg.label);
+      }
+    });
 
     // ========== 箭头标记（按边语义分别定义） ==========
     const defs = svg.append('defs');
@@ -492,16 +575,91 @@ export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3Gra
         .attr('stroke-width', (d: any) => d.width);
     }
 
-    // ========== 力导向 ==========
-    const sim = d3.forceSimulation(nodes as any)
-      .force('link', d3.forceLink(linkObjs as any).id((d: any) => d.id).distance(130).strength(0.6))
-      .force('charge', d3.forceManyBody().strength(-1400))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collide', d3.forceCollide().radius((d: any) => d.r + 30))
-      .force('x', d3.forceX(width / 2).strength(0.08))
-      .force('y', d3.forceY(height / 2).strength(0.08))
-      .alphaDecay(0.04)
-      .velocityDecay(0.6);
+    // ========== 流程高亮函数 ==========
+    function highlightFlow(flow: ProcessFlow, currentStep?: number) {
+      const step = currentStep || flow.steps.length;
+      const completedIds = new Set(flow.steps.slice(0, step).map(s => s.nodeId));
+      const pendingIds = new Set(flow.steps.slice(step).map(s => s.nodeId));
+      const pathSet = new Set(flow.pathSegments.flat());
+
+      // 节点高亮：已完成(亮绿) → 当前步骤(金色脉冲) → 待执行(灰显) → 流程外(极淡)
+      nodeG.selectAll('circle')
+        .attr('opacity', (d: any) => {
+          if (!pathSet.has(d.id)) return 0.08;
+          if (completedIds.has(d.id)) return 1;
+          if (pendingIds.has(d.id)) return 0.35;
+          return 0.5;
+        })
+        .attr('stroke', (d: any) => {
+          const stepInfo = flow.steps.find(s => s.nodeId === d.id);
+          const stepIdx = stepInfo?.step || 0;
+          if (stepIdx === step && step <= flow.steps.length) return '#FBBF24'; // 当前步骤金色
+          if (completedIds.has(d.id)) return '#34D399'; // 已完成绿色
+          return 'rgba(255,255,255,0.15)';
+        })
+        .attr('stroke-width', (d: any) => {
+          const stepInfo = flow.steps.find(s => s.nodeId === d.id);
+          if (stepInfo?.step === step) return 4;
+          if (completedIds.has(d.id)) return 2.5;
+          return 1;
+        });
+
+      // 步骤序号标签
+      nodeG.selectAll('.node-label')
+        .style('opacity', (d: any) => pathSet.has(d.id) ? 1 : 0)
+        .text((d: any) => {
+          const si = flow.steps.find(s => s.nodeId === d.id);
+          return si ? `${si.step}. ${d.label}` : d.label;
+        })
+        .attr('fill', (d: any) => {
+          const si = flow.steps.find(s => s.nodeId === d.id);
+          if (si?.step === step) return '#FBBF24';
+          if (completedIds.has(d.id)) return '#34D399';
+          return '#94A3B8';
+        });
+
+      // 边高亮：路径上的边亮起，其余暗淡
+      linkG.selectAll('line')
+        .attr('stroke-opacity', (d: any) => {
+          const inPath = flow.pathSegments.some(([s, t]) =>
+            (d.source.id === s && d.target.id === t) ||
+            (d.source.id === t && d.target.id === s)
+          );
+          if (!inPath) return 0.04;
+          // 判断边是否在已完成区间
+          const srcCompleted = completedIds.has(d.source.id) && completedIds.has(d.target.id);
+          return srcCompleted ? 1 : 0.5;
+        })
+        .attr('stroke-width', (d: any) => {
+          const inPath = flow.pathSegments.some(([s, t]) =>
+            (d.source.id === s && d.target.id === t) ||
+            (d.source.id === t && d.target.id === s)
+          );
+          return inPath ? d.width * 1.6 : d.width;
+        })
+        .attr('stroke', (d: any) => {
+          const inPath = flow.pathSegments.some(([s, t]) =>
+            (d.source.id === s && d.target.id === t) ||
+            (d.source.id === t && d.target.id === s)
+          );
+          if (inPath) return '#34D399';
+          return d.color;
+        });
+    }
+
+    // 如果有激活的流程，应用流程高亮
+    if (activeFlow) {
+      setTimeout(() => highlightFlow(activeFlow, flowCurrentStep), 300);
+    }
+
+    // ========== 分层力导向模拟（带板块约束） ==========
+    const sim = createLayeredSimulation({
+      nodes: nodes as any[],
+      linkObjs,
+      layoutInfos,
+      width,
+      height,
+    });
 
     simRef.current = sim;
 
@@ -535,7 +693,7 @@ export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3Gra
       sim.stop();
       tooltip.remove();
     };
-  }, [data, width, height, activeDomains, activeTypes]);
+  }, [data, width, height, activeDomains, activeTypes, activeFlow, flowCurrentStep]);
 
   // ==================== focusNodeId Effect：搜索定位 ====================
   useEffect(() => {
