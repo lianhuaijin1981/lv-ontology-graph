@@ -10,7 +10,7 @@ import { ViewSwitcher } from '@/components/ViewSwitcher';
 import { InMemoryAdapter } from '@/storage/InMemoryAdapter';
 import { QueryEngine } from '@/graph/QueryEngine';
 import type { EntityId, BusinessDomain, FilterState } from '@/types';
-import type { GraphMode } from '@/graph/types';
+import type { GraphData, GraphNode, GraphLink, GraphMode } from '@/graph/types';
 import type { OntologyObject, OntologyLink } from '@/ontology/types';
 import { globalOntologyRegistry, OntologyRegistryImpl } from '@/ontology/Ontology';
 import {
@@ -29,7 +29,7 @@ export default function App() {
   const [explorerNodeId, setExplorerNodeId] = useState<EntityId | undefined>(undefined); // ObjectExplorer 显示的节点
   const [mode, setMode] = useState<GraphMode>('map');
   const [breadcrumb, setBreadcrumb] = useState<EntityId[]>([]);
-  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [searchResults, setSearchResults] = useState<EntityId[]>([]);
   const [windowSize, setWindowSize] = useState({ width: 1200, height: 800 });
@@ -40,9 +40,9 @@ export default function App() {
     if (viewMode === 'full' || graphData.nodes.length === 0) return graphData;
     // 地图模式：只保留核心链路上的节点
     const coreIds = new Set([...MAIN_PRODUCTION_CHAIN, ...ORDER_CHAIN, ...COST_CHAIN]);
-    const filteredNodes = graphData.nodes.filter((n: any) => coreIds.has(n.id));
-    const nodeIds = new Set(filteredNodes.map((n: any) => n.id));
-    const filteredLinks = graphData.links.filter((l: any) => {
+    const filteredNodes = graphData.nodes.filter((n: GraphNode) => coreIds.has(n.id));
+    const nodeIds = new Set(filteredNodes.map((n: GraphNode) => n.id));
+    const filteredLinks = graphData.links.filter((l: GraphLink) => {
       const sid = typeof l.source === 'string' ? l.source : l.source.id;
       const tid = typeof l.target === 'string' ? l.target : l.target.id;
       return nodeIds.has(sid) && nodeIds.has(tid);
@@ -280,7 +280,20 @@ export default function App() {
   // mode 状态保留用于面包屑逻辑，不再用于视图切换（视图由 viewMode 控制）
 
   const handleAction = useCallback((actionId: string, entityId: EntityId) => {
-    console.log(`Action ${actionId} on ${entityId}`);
+    // TODO: 实现真正的动作执行逻辑，这里先展示反馈
+    const actionName = {
+      drillDown: '穿透分析',
+      traceSource: '溯源追踪',
+      exportData: '导出数据',
+      viewHistory: '查看历史',
+      calculateROI: '计算 ROI',
+    }[actionId] || actionId;
+    
+    const obj = allEntities.find((e) => e.id === entityId);
+    const entityName = obj?.displayName || entityId;
+    
+    alert(`🎯 执行动作: ${actionName}\n📌 対象: ${entityName}`);
+    console.log(`[Action] ${actionId} on ${entityId}`, obj);
   }, []);
 
   // ==================== 辅助函数 ====================
