@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { D3GraphCanvas } from '@/components/D3GraphCanvas';
+import type { GraphExportHandle } from '@/components/D3GraphCanvas';
 import { ObjectExplorer } from '@/components/ObjectExplorer';
 import { FilterPanel } from '@/components/FilterPanel';
 import { ViewSwitcher } from '@/components/ViewSwitcher';
@@ -19,7 +20,7 @@ import {
   shoeFactoryActionTypes,
 } from '@/ontology/ShoeFactoryOntology';
 import { allEntities, allLinks } from '@/data/shoeFactoryData';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, Download, FileJson } from 'lucide-react';
 import { SEMANTIC_LEGEND, NODE_SEMANTIC_CONFIG, MAIN_PRODUCTION_CHAIN, ORDER_CHAIN, COST_CHAIN } from '@/data/businessSemantic';
 import './App.css';
 
@@ -63,6 +64,9 @@ export default function App() {
   const registryRef = useRef(new OntologyRegistryImpl());
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engineRef = useRef<QueryEngine | null>(null);
+  const exportRef = useRef<GraphExportHandle | null>(null);
+  // 搜索命中后定位到的节点 ID
+  const [focusNodeId, setFocusNodeId] = useState<EntityId | undefined>(undefined);
 
   // ==================== 窗口尺寸 ====================
   useEffect(() => {
@@ -168,6 +172,8 @@ export default function App() {
         const firstId = matchedIds[0];
         setSelectedNodeId(firstId);
         setBreadcrumb((prev) => (prev.includes(firstId) ? prev : [...prev, firstId]));
+        // 触发图谱 FitView 定位
+        setFocusNodeId(firstId);
       }
     } catch (err) {
       console.error('Search failed:', err);
@@ -220,6 +226,7 @@ export default function App() {
     setFilters({ domains: [], objectTypes: [], searchQuery: '', importanceMin: 0 });
     setSearchResults([]);
     setMode('map');
+    setFocusNodeId(undefined);
   }, []);
 
   // ==================== 节点交互（修复版）====================
@@ -340,6 +347,7 @@ export default function App() {
       <div className="flex-1 relative" style={{ minWidth: 0 }}>
         {filteredGraphData.nodes.length > 0 && (
           <D3GraphCanvas
+            ref={exportRef}
             key={`g6-${canvasWidth}x${canvasHeight}`}
             data={filteredGraphData}
             width={canvasWidth}
@@ -348,6 +356,7 @@ export default function App() {
             onNodeContextMenu={handleNodeContextMenu}
             activeDomains={filters.domains}
             activeTypes={filters.objectTypes}
+            focusNodeId={focusNodeId}
           />
         )}
 
@@ -459,6 +468,27 @@ export default function App() {
             <RotateCcw className="w-3.5 h-3.5" />
             <span className="text-xs">重置</span>
           </button>
+
+          {/* 导出按钮组 */}
+          <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl flex items-center p-0.5 gap-0.5">
+            <button
+              onClick={() => exportRef.current?.exportPNG()}
+              className="px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors flex items-center gap-1"
+              title="导出图谱为 PNG 图片"
+            >
+              <Download className="w-3 h-3" />
+              PNG
+            </button>
+            <div className="w-px h-4 bg-slate-700" />
+            <button
+              onClick={() => exportRef.current?.exportJSON()}
+              className="px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors flex items-center gap-1"
+              title="导出图谱数据为 JSON"
+            >
+              <FileJson className="w-3 h-3" />
+              JSON
+            </button>
+          </div>
 
           {/* 语义图例：5类业务角色 */}
           <div className="bg-slate-900/95 backdrop-blur border border-slate-800 rounded-lg shadow-xl px-3 py-2 flex items-center gap-3">

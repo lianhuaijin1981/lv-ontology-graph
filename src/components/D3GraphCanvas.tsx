@@ -7,9 +7,11 @@
  * 3. 标签默认隐藏，悬停 Tooltip 显示，零重叠
  * 4. 右键绑定 SVG 元素，阻止浏览器默认菜单
  * 5. 力导向动画可控，点击后暂停动画防抖动
+ * 6. focusNodeId：搜索命中后自动 FitView 定位到目标节点
+ * 7. exportRef：暴露 exportPNG / exportJSON 方法给父组件
  */
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import * as d3 from 'd3';
 import type { EntityId } from '@/types';
 import type { GraphData, GraphNode, GraphLink } from '@/graph/types';
@@ -20,6 +22,12 @@ import {
   isCoreChainEdge,
 } from '@/data/businessSemantic';
 
+// ==================== 导出句柄类型（供父组件调用） ====================
+export interface GraphExportHandle {
+  exportPNG: (filename?: string) => void;
+  exportJSON: (filename?: string) => void;
+}
+
 interface Props {
   data: GraphData;
   width: number;
@@ -28,6 +36,8 @@ interface Props {
   onNodeContextMenu?: (nodeId: EntityId) => void;
   activeDomains?: string[];
   activeTypes?: string[];
+  /** 搜索命中后自动 FitView 定位的节点 ID */
+  focusNodeId?: EntityId;
 }
 
 const TIER = {
@@ -47,14 +57,95 @@ function dimColor(hex: string, f: number): string {
   return `#${Math.round(r*f+30*(1-f)).toString(16).padStart(2,'0')}${Math.round(g*f+30*(1-f)).toString(16).padStart(2,'0')}${Math.round(b*f+30*(1-f)).toString(16).padStart(2,'0')}`;
 }
 
-export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextMenu, activeDomains = [], activeTypes = [] }: Props) {
+// ==================== 组件（使用 forwardRef 暴露导出句柄） ====================
+
+export const D3GraphCanvas = forwardRef<GraphExportHandle, Props>(function D3GraphCanvas(
+  { data, width, height, onNodeClick, onNodeContextMenu, activeDomains = [], activeTypes = [], focusNodeId },
+  ref
+) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simRef = useRef<d3.Simulation<any, any> | null>(null);
+  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const nodesDataRef = useRef<any[]>([]);
   const lastId = useRef<string | null>(null);
   const cb = useRef({ onNodeClick, onNodeContextMenu });
   cb.current = { onNodeClick, onNodeContextMenu };
 
+  // ==================== 暴露导出方法给父组件 ====================
+  useImperativeHandle(ref, () => ({
+    exportPNG(filename = 'knowledge-graph.png') {
+      const svgEl = svgRef.current;
+      if (!svgEl) return;
+
+      // 序列化 SVG
+      const serializer = new XMLSerializer();
+      const svgStr = serializer.serializeToString(svgEl);
+      const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      // 转 canvas → PNG
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const scale = window.devicePixelRatio || 1;
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext('2d')!;
+        // 背景填充（保持与 SVG 背景一致）
+        ctx.fillStyle = '#0B0F19';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+
+        canvas.toBlob((b) => {
+          if (!b) return;
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(b);
+          a.download = filename;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        }, 'image/png');
+      };
+      img.src = url;
+    },
+
+    exportJSON(filename = 'knowledge-graph.json') {
+      const nodes = nodesDataRef.current.map((n: any) => ({
+        id: n.id,
+        label: n.label,
+        typeId: n.typeId,
+        domain: n.domain,
+        semantic: n.semantic,
+        tier: n.tier,
+        x: Math.round(n.x ?? 0),
+        y: Math.round(n.y ?? 0),
+      }));
+
+      const links = data.links.map((l: GraphLink) => {
+        const sid = typeof l.source === 'string' ? l.source : l.source.id;
+        const tid = typeof l.target === 'string' ? l.target : l.target.id;
+        return {
+          id: l.id,
+          source: sid,
+          target: tid,
+          typeId: l.typeId,
+          semantics: l.semantics,
+          label: l.label,
+        };
+      });
+
+      const json = JSON.stringify({ nodes, links, exportedAt: new Date().toISOString() }, null, 2);
+      const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    },
+  }), [data, width, height]);
+
+  // ==================== 主渲染 Effect ====================
   useEffect(() => {
     if (!svgRef.current || width <= 0 || height <= 0) return;
 
@@ -92,6 +183,8 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       };
     });
 
+    nodesDataRef.current = nodes;
+
     const links = data.links.map((l: GraphLink) => {
       const ec = getEdgeSemanticConfig(l.typeId, l.semantics);
       const s = typeof l.source === 'string' ? l.source : l.source.id;
@@ -111,6 +204,7 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
         dash: inC ? undefined : ec.dash,
         opacity: inC ? 1 : maxTier >= 3 ? 0.15 : 0.4,
         inChain: inC,
+        semantics: l.semantics,
       };
     });
 
@@ -130,22 +224,14 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .scaleExtent([0.1, 4])
       .on('zoom', (event) => g.attr('transform', event.transform.toString()));
     svg.call(zoom as any).on('dblclick.zoom', null);
+    zoomRef.current = zoom;
 
-    // 箭头标记（主流程箭头更醒目）
+    // ========== 箭头标记（按边语义分别定义） ==========
     const defs = svg.append('defs');
+
+    // 主流程 flow 箭头（金色）
     defs.append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 38)
-      .attr('refY', 0)
-      .attr('markerWidth', 7)
-      .attr('markerHeight', 7)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-5L10,0L0,5')
-      .attr('fill', '#64748B');
-    defs.append('marker')
-      .attr('id', 'arrow-gold')
+      .attr('id', 'arrow-flow-chain')
       .attr('viewBox', '0 -5 10 10')
       .attr('refX', 40)
       .attr('refY', 0)
@@ -156,7 +242,73 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .attr('d', 'M0,-5L10,0L0,5')
       .attr('fill', '#FBBF24');
 
-    // 绘制边
+    // flow 箭头（蓝灰，实线）
+    defs.append('marker')
+      .attr('id', 'arrow-flow')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 38)
+      .attr('refY', 0)
+      .attr('markerWidth', 7)
+      .attr('markerHeight', 7)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#60A5FA');
+
+    // support 箭头（绿色）
+    defs.append('marker')
+      .attr('id', 'arrow-support')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 38)
+      .attr('refY', 0)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#34D399');
+
+    // impact 箭头（橙色，开放箭头）
+    defs.append('marker')
+      .attr('id', 'arrow-impact')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 38)
+      .attr('refY', 0)
+      .attr('markerWidth', 7)
+      .attr('markerHeight', 7)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', 'none')
+      .attr('stroke', '#FB923C')
+      .attr('stroke-width', 1.5);
+
+    // default 箭头（灰色）
+    defs.append('marker')
+      .attr('id', 'arrow-default')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 38)
+      .attr('refY', 0)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#64748B');
+
+    // 搜索高亮节点发光效果 filter
+    const filter = defs.append('filter')
+      .attr('id', 'glow-focus')
+      .attr('x', '-40%').attr('y', '-40%')
+      .attr('width', '180%').attr('height', '180%');
+    filter.append('feGaussianBlur')
+      .attr('stdDeviation', '4')
+      .attr('result', 'blur');
+    const feMerge = filter.append('feMerge');
+    feMerge.append('feMergeNode').attr('in', 'blur');
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // ========== 绘制边（增强语义差异化） ==========
     const linkG = g.selectAll('.link')
       .data(linkObjs)
       .enter()
@@ -167,10 +319,32 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .attr('stroke', (d: any) => d.color)
       .attr('stroke-width', (d: any) => d.width)
       .attr('stroke-opacity', (d: any) => d.opacity)
-      .attr('stroke-dasharray', (d: any) => d.dash ? d.dash.join(',') : null)
-      .attr('marker-end', (d: any) => d.inChain ? 'url(#arrow-gold)' : 'url(#arrow)');
+      .attr('stroke-dasharray', (d: any) => {
+        if (d.inChain) return null;
+        // 按边语义精细化虚线样式
+        const s = d.semantics ?? '';
+        if (s === 'flow' || s === 'precedence' || s === 'pathAssociation') return null; // 实线
+        if (s === 'support' || s === 'capabilitySupport' || s === 'responsibility') return '6,3'; // 长虚线
+        if (s === 'impact' || s === 'impactTransmission') return '2,5'; // 点线
+        if (s === 'association') return '8,4'; // 中虚线
+        if (s === 'dependency') return '3,3,8,3'; // 混合虚线（先短后长）
+        return d.dash ? d.dash.join(',') : null;
+      })
+      .attr('stroke-linecap', (d: any) => {
+        const s = d.semantics ?? '';
+        // 影响链使用圆形端点，视觉上更"柔和"
+        return (s === 'impact' || s === 'impactTransmission') ? 'round' : 'butt';
+      })
+      .attr('marker-end', (d: any) => {
+        if (d.inChain) return 'url(#arrow-flow-chain)';
+        const s = d.semantics ?? '';
+        if (s === 'flow' || s === 'precedence' || s === 'pathAssociation') return 'url(#arrow-flow)';
+        if (s === 'support' || s === 'capabilitySupport' || s === 'responsibility' || s === 'association') return 'url(#arrow-support)';
+        if (s === 'impact' || s === 'impactTransmission' || s === 'dependency') return 'url(#arrow-impact)';
+        return 'url(#arrow-default)';
+      });
 
-    // 绘制节点
+    // ========== 绘制节点 ==========
     const nodeG = g.selectAll('.node')
       .data(nodes)
       .enter()
@@ -194,7 +368,7 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .attr('font-weight', (d: any) => d.fontWeight)
       .attr('font-family', 'system-ui, -apple-system, sans-serif')
       .attr('pointer-events', 'none')
-      .style('opacity', (d: any) => d.inChain ? 1 : 0) // 核心链路默认显示
+      .style('opacity', (d: any) => d.inChain ? 1 : 0)
       .style('text-shadow', (d: any) => d.inChain ? '0 1px 3px rgba(0,0,0,0.8)' : 'none')
       .text((d: any) => d.label);
 
@@ -215,20 +389,17 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .style('z-index', '100')
       .style('white-space', 'nowrap');
 
-    // 事件
+    // ========== 事件 ==========
     nodeG
       .on('mouseenter', function(event: any, d: any) {
-        // 显示 Tooltip
         tooltip
           .style('opacity', 1)
           .html(`<div style="font-weight:700">${d.label}</div><div style="color:#94A3B8;font-size:11px">${d.semantic} · ${d.domain}</div>`);
         const [mx, my] = d3.pointer(event, containerRef.current);
         tooltip.style('left', (mx + 12) + 'px').style('top', (my - 12) + 'px');
 
-        // 显示标签
         d3.select(this).select('.node-label').style('opacity', 1);
 
-        // 未选中时高亮邻居
         if (!lastId.current) {
           highlight(d.id);
         }
@@ -240,7 +411,6 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       .on('mouseleave', function(_event: any, d: any) {
         tooltip.style('opacity', 0);
         if (!lastId.current || lastId.current !== d.id) {
-          // 核心链路节点保持显示标签，其余隐藏
           d3.select(this).select('.node-label').style('opacity', d.inChain ? 1 : 0);
         }
         if (!lastId.current) restoreAll();
@@ -271,7 +441,7 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
       cb.current.onNodeClick?.(undefined);
     });
 
-    // 高亮函数
+    // ========== 高亮函数 ==========
     function highlight(activeId: string) {
       const nbrs = new Set<string>();
       linkObjs.forEach((l: any) => {
@@ -311,7 +481,8 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
     function restoreAll() {
       nodeG.selectAll('circle')
         .attr('opacity', (d: any) => d.dimmed ? 0.12 : d.tier === 3 ? 0.65 : d.tier === 2 ? 0.85 : 1)
-        .attr('stroke-width', (d: any) => d.strokeWidth);
+        .attr('stroke-width', (d: any) => d.strokeWidth)
+        .attr('filter', null);
 
       nodeG.selectAll('.node-label')
         .style('opacity', (d: any) => d.inChain ? 1 : 0);
@@ -321,7 +492,7 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
         .attr('stroke-width', (d: any) => d.width);
     }
 
-    // 力导向
+    // ========== 力导向 ==========
     const sim = d3.forceSimulation(nodes as any)
       .force('link', d3.forceLink(linkObjs as any).id((d: any) => d.id).distance(130).strength(0.6))
       .force('charge', d3.forceManyBody().strength(-1400))
@@ -366,9 +537,60 @@ export function D3GraphCanvas({ data, width, height, onNodeClick, onNodeContextM
     };
   }, [data, width, height, activeDomains, activeTypes]);
 
+  // ==================== focusNodeId Effect：搜索定位 ====================
+  useEffect(() => {
+    if (!focusNodeId || !svgRef.current || !zoomRef.current) return;
+
+    // 等仿真稳定后再定位（延迟 500ms）
+    const timer = setTimeout(() => {
+      const node = nodesDataRef.current.find((n: any) => n.id === focusNodeId);
+      if (!node || node.x == null || node.y == null) return;
+
+      const svg = d3.select(svgRef.current!);
+      const zoom = zoomRef.current!;
+
+      // 将目标节点平移到画布中心并放大
+      const targetScale = 1.8;
+      const transform = d3.zoomIdentity
+        .translate(width / 2, height / 2)
+        .scale(targetScale)
+        .translate(-node.x, -node.y);
+
+      svg.transition().duration(600).ease(d3.easeCubicInOut)
+        .call(zoom.transform as any, transform);
+
+      // 脉冲高亮效果：搜索命中节点闪烁 3 次
+      const g = svg.select('g');
+      const nodeEl = g.selectAll('.node')
+        .filter((d: any) => d.id === focusNodeId);
+
+      let count = 0;
+      const pulse = () => {
+        if (count >= 6) {
+          // 恢复正常样式
+          nodeEl.select('circle')
+            .attr('stroke', (d: any) => d.stroke)
+            .attr('stroke-width', (d: any) => d.strokeWidth)
+            .attr('filter', null);
+          return;
+        }
+        const on = count % 2 === 0;
+        nodeEl.select('circle')
+          .attr('stroke', on ? '#22D3EE' : (d: any) => d.stroke)
+          .attr('stroke-width', on ? 5 : (d: any) => d.strokeWidth)
+          .attr('filter', on ? 'url(#glow-focus)' : null);
+        count++;
+        setTimeout(pulse, 300);
+      };
+      pulse();
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [focusNodeId, width, height]);
+
   return (
     <div ref={containerRef} style={{ position: 'absolute', top: 0, left: 0, width, height, overflow: 'hidden' }} onContextMenu={(e) => e.preventDefault()}>
       <svg ref={svgRef} style={{ display: 'block', background: '#0B0F19', cursor: 'grab', width: '100%', height: '100%' }} />
     </div>
   );
-}
+});

@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import path from "path"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
@@ -23,6 +24,17 @@ export default defineConfig({
           g6: ['@antv/g6'],
         },
       },
+    },
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/__tests__/setup.ts'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      include: ['src/graph/**', 'src/storage/**', 'src/ontology/**', 'src/data/**'],
     },
   },
 });

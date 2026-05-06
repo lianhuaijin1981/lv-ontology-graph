@@ -1,73 +1,231 @@
-# React + TypeScript + Vite
+# 鞋厂本体知识图谱 · lv-ontology-graph
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> 基于 Palantir Ontology 理念构建的女鞋总厂知识图谱可视化平台。将鞋厂九大业务板块（研发设计、生产制造、供应链管理……）中的 ~90 个核心实体与 ~80 条业务关系，以交互式图谱形式呈现，支持多视图探索与智能筛选。
 
-Currently, two official plugins are available:
+[![CI](https://github.com/lianhuaijin1981/lv-ontology-graph/actions/workflows/ci.yml/badge.svg)](https://github.com/lianhuaijin1981/lv-ontology-graph/actions/workflows/ci.yml)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## ✨ 核心功能
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| 功能 | 说明 |
+|------|------|
+| **双视图模式** | 地图模式（核心链路 + 精简布局）/ 全量模式（全部实体） |
+| **力导向布局** | D3 物理模拟，自动碰撞检测，400ms 快速稳定 |
+| **节点语义形状** | 5类角色：圆形=业务主体、矩形=业务系统、菱形=工艺节点、六边形=业务单据、三角=指标/风险 |
+| **边语义样式** | 实线=主流程 · 虚线=支撑链 · 点线=影响链，3种颜色区分 |
+| **核心链路高亮** | 生产主链路 / 订单履约链路 / 成本传导链路，金色描边一眼可见 |
+| **交互导航** | 左键选中节点 → 高亮一跳邻居；右键 → 弹出实体详情面板 |
+| **实体详情面板** | 属性展示、关联列表、可执行动作（穿透分析/溯源追踪/导出/查看历史/计算ROI） |
+| **板块 / 类型筛选** | 按 9 个业务板块 + 25+ 实体类型精准过滤 |
+| **全文搜索** | 实时 300ms 防抖搜索，命中高亮 + 结果列表 |
+| **面包屑导航** | 记录探索路径，支持回溯跳转 |
+| **图谱导出** | 导出当前视图为 PNG 图片 |
+| **重置视图** | 一键恢复初始状态 |
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## 🏗 技术栈
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+| 层次 | 技术 |
+|------|------|
+| **UI 框架** | React 19 + TypeScript |
+| **构建工具** | Vite 7 |
+| **图可视化** | D3.js 7（力导向 SVG） |
+| **样式** | Tailwind CSS 3.4 |
+| **UI 组件** | shadcn/ui（Radix UI 基础） |
+| **图标** | Lucide React |
+| **代码规范** | ESLint 9 + TypeScript ESLint |
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+---
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## 📐 架构设计
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    UI 层                            │
+│  FilterPanel | ObjectExplorer | ViewSwitcher         │
+├─────────────────────────────────────────────────────┤
+│                  渲染层（D3 SVG）                    │
+│  D3GraphCanvas ← GraphEngine（力导向状态机）         │
+├─────────────────────────────────────────────────────┤
+│                  图引擎层                           │
+│  GraphEngine（D3 力导向）| QueryEngine（图查询）      │
+├─────────────────────────────────────────────────────┤
+│                  本体层                             │
+│  Ontology.ts | ShoeFactoryOntology.ts | types.ts     │
+├─────────────────────────────────────────────────────┤
+│                  存储层                             │
+│  InMemoryAdapter | StorageAdapter（接口契约）        │
+├─────────────────────────────────────────────────────┤
+│                  数据层                             │
+│  shoeFactoryData | businessSemantic | businessTier   │
+└─────────────────────────────────────────────────────┘
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 核心文件
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+| 文件 | 说明 |
+|------|------|
+| `src/App.tsx` | 主入口，状态管理，视图控制（~500 行） |
+| `src/graph/GraphEngine.ts` | D3 力导向布局、状态机、交互事件（~750 行） |
+| `src/graph/QueryEngine.ts` | 图查询：邻居查询、路径查找、子图抽取（~230 行） |
+| `src/storage/InMemoryAdapter.ts` | 内存存储、BFS/邻居查询、bulkImport（~380 行） |
+| `src/ontology/ShoeFactoryOntology.ts` | 女鞋厂对象/链接/动作类型定义（~210 行） |
+| `src/data/shoeFactoryData.ts` | ~90 实体 + ~80 链接（~285 行） |
+| `src/data/businessSemantic.ts` | 节点语义形状配置、边语义样式配置（~270 行） |
+| `src/components/D3GraphCanvas.tsx` | D3 图渲染 React 组件（~200 行） |
+| `src/components/ObjectExplorer.tsx` | 实体详情面板（~250 行） |
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+---
+
+## 📦 数据规模
+
+| 数据类型 | 数量 |
+|----------|------|
+| 实体（Objects） | ~90（9 大板块聚合 + 各板块核心实体） |
+| 链接（Links） | ~80（覆盖 55 条三元组精选） |
+| 对象类型 | 25+ |
+| 链接类型 | 15+ |
+| 动作类型 | 10+ |
+
+### 九大业务板块
+
+| 板块 | 核心实体示例 |
+|------|-------------|
+| 研发设计 | 出格设计师、版型师傅、鞋款设计方案 |
+| 生产制造 | 裁断车间、针车车间、成型车间、贴底工艺 |
+| 供应链管理 | 原材料供应商A、头层牛皮、皮料专用仓 |
+| 质量管控 | IQC质检员、OQC质检员、成品质检标准 |
+| 业务系统支撑 | ERP、MES、WMS、QMS、APS、EAM |
+| 市场渠道销售 | 广交会、抖音短视频、海外品牌商A |
+| 订单物流报关 | 外贸大货订单、海运订舱服务、报关服务 |
+| 成本利润核算 | 皮料主料成本、皮料损耗率、次品率 |
+| 经营风险管控 | 批量品质风险、库存积压风险、汇率波动风险 |
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Node.js ≥ 18
+- npm ≥ 9
+
+### 安装与运行
+
+```bash
+# 克隆仓库
+git clone https://github.com/lianhuaijin1981/lv-ontology-graph.git
+cd lv-ontology-graph
+
+# 安装依赖
+npm install
+
+# 启动开发服务器（默认端口 5173）
+npm run dev
 ```
+
+浏览器访问 `http://localhost:5173`
+
+### 构建生产版本
+
+```bash
+npm run build
+# 构建产物输出至 dist/
+# index.html: 0.5 kB | index.js: ~420 kB (gzip: ~130 kB)
+```
+
+### 代码检查
+
+```bash
+npm run lint
+```
+
+---
+
+## 🎮 使用指南
+
+### 基础交互
+
+| 操作 | 效果 |
+|------|------|
+| **左键单击节点** | 选中节点，高亮一跳直接邻居 |
+| **左键再次单击** | 取消选中 |
+| **右键单击节点** | 打开实体详情面板 |
+| **点击空白处** | 取消选中，收起面板 |
+| **滚轮缩放** | 图谱缩放（0.1x ~ 4x） |
+| **拖拽节点** | 临时固定节点位置 |
+| **拖拽背景** | 平移整个图谱 |
+
+### 视图模式
+
+| 模式 | 说明 |
+|------|------|
+| **地图模式** | 只显示核心链路节点（生产主链路+订单履约+成本传导），适合快速理解业务脉络 |
+| **全量模式** | 显示所有 ~90 个实体，适合深度探索关系网络 |
+
+### 筛选功能
+
+- **板块筛选**：点击顶部板块标签，可多选，联动高亮对应节点
+- **类型筛选**：按对象类型（车间/系统/设计师…）过滤
+- **重要性筛选**：滑块控制最低重要性阈值
+- **全文搜索**：搜索框输入关键词，实时过滤节点
+
+### 实体探索
+
+1. 右键节点 → 打开详情面板
+2. 面板展示：基本信息 + 所有属性 + 关联链接列表
+3. 点击关联实体 → 导航跳转
+4. 面包屑导航 → 记录探索路径，可回溯
+
+---
+
+## 🗺 本体结构
+
+### 节点语义角色（5 类）
+
+| 形状 | 语义角色 | 颜色 | 对应实体类型 |
+|------|---------|------|------------|
+| ● 圆形 | 业务主体 | 蓝色 | 客户、供应商、设计师、业务员 |
+| ▣ 矩形 | 业务系统 | 紫色 | ERP、MES、WMS、QMS、APS |
+| ◆ 菱形 | 工艺节点 | 绿色 | 车间、工序、设备、物料 |
+| ⬡ 六边形 | 业务单据 | 橙色 | 订单、物流、合同 |
+| ▲ 三角 | 指标/风险 | 红色 | 成本、次品率、风险项 |
+
+### 边语义角色（3 类）
+
+| 样式 | 语义角色 | 颜色 | 含义 |
+|------|---------|------|------|
+| ─── 实线 | 主流程 | 蓝色 | 工序前置、订单驱动、路径关联 |
+| - - - 虚线 | 支撑链 | 紫色 | 系统支撑、仓储管理、负责关系 |
+| ··· 点线 | 影响链 | 红色 | 成本传导、风险影响、利润关联 |
+
+---
+
+## 🔮 路线图
+
+- [x] 核心图谱可视化（D3 力导向 SVG）
+- [x] 双视图模式（地图/全量）
+- [x] 节点交互（选中/悬停/拖拽）
+- [x] 右键实体详情面板
+- [x] 筛选面板 + 全文搜索
+- [x] 面包屑导航
+- [x] 动作 handler（穿透分析/溯源追踪/导出/历史/ROI）
+- [x] GitHub Actions CI/CD
+- [ ] 单元测试覆盖
+- [ ] 搜索结果自动定位（FitView to Search）
+- [ ] 图谱导出（PNG/SVG）
+- [ ] 路径查找可视化
+- [ ] 接入真实数据源（GraphDB / Neo4j）
+- [ ] 多语言支持
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+*最后更新：2026-05-06 · 第 6 轮优化完成*
