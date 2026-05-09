@@ -3,9 +3,80 @@
 ================================================================================
 
 --------------------------------------------------------------------------------
+  轮次：第 7 轮（测试覆盖 + Hooks 抽取 + CI/CD 完善）
+  日期：2026-05-10
+  状态：单元测试覆盖三大核心模块，自定义 Hooks 抽取，CI/CD 流水线增强
+--------------------------------------------------------------------------------
+
+本轮核心变更
+--------------
+1. GraphEngine 单元测试（src/__tests__/GraphEngine.test.ts）
+   → 覆盖：构造初始化、数据加载（setData/updateData）、状态管理（setMode/setSelectedNode/
+     setHoveredNode/addBreadcrumb/setSearchResults）、视图控制（fitView/resetView/focusNode/
+     resize）、事件系统、生命周期（destroy）、视觉状态渲染
+   → 42 个测试用例
+
+2. App 组件集成测试（src/__tests__/App.test.tsx）
+   → Mock D3GraphCanvas / SceneShowcase / FlowStoryBar / ScenePanel / ObjectExplorer
+   → 覆盖：初始化加载流程、筛选面板交互、搜索功能、视图切换、底部工具栏
+   → 使用 @testing-library/react + userEvent
+
+3. 自定义 Hooks 抽取
+   → useGraphFilter（src/hooks/useGraphFilter.ts）：筛选状态管理
+     - toggleDomain / toggleType / onImportanceChange / onSearchChange / resetFilters
+   → useGraphData（src/hooks/useGraphData.ts）：图谱数据加载与刷新
+     - InMemoryAdapter 初始化 + QueryEngine 构建
+     - 筛选触发数据刷新
+     - 视图模式（地图/全量）过滤
+
+4. CI/CD 流水线增强
+   → 新增 test job：npm test --if-present
+   → 已有 lint-and-build job：ESLint → TypeCheck → Build → Upload artifacts
+   → 已有 security-audit job：npm audit
+
+5. 测试基础设施
+   → vitest 4.1.5 + @testing-library/react 16.3.2 + jsdom 29.1.1 已配置
+   → package.json 已包含 test / test:run / test:coverage / test:ui 脚本
+
+测试文件清单
+--------------
+src/__tests__/setup.ts              — Vitest 全局配置
+src/__tests__/InMemoryAdapter.test.ts — 存储适配器测试（已有，30+ 用例）
+src/__tests__/QueryEngine.test.ts    — 查询引擎测试（已有，20+ 用例）
+src/__tests__/GraphEngine.test.ts    — 渲染引擎测试（新增，42 用例）
+src/__tests__/App.test.tsx           — App 组件集成测试（新增）
+
+Hooks 文件清单
+--------------
+src/hooks/use-mobile.ts             — 移动端检测（已有）
+src/hooks/useGraphFilter.ts         — 筛选状态管理（新增）
+src/hooks/useGraphData.ts           — 图谱数据加载与刷新（新增）
+
+下一步可选
+----------
+- 将 App.tsx 重构为使用 useGraphData / useGraphFilter（渐进式迁移）
+- GraphEngine 拆分为 LayoutEngine / InteractionHandler / GraphRenderer
+- E2E 测试（Playwright）
+- 引入后端 GraphDB 替换 InMemoryAdapter
+- 国际化（i18n）
+
+历史轮次摘要
+------------
+第1轮：项目重建，Palantir Ontology 架构（ObjectType + LinkType + ActionType）
+第2轮：修复 TypeScript enum 编译错误，修复黑屏（QueryEngine 异步获取类型）
+第3轮：技术栈升级引入 G6 v5，业务语义分类（5类节点 + 3类边）
+第4轮：G6 右键/闪烁/过曝问题多次修复未果
+第5轮：用户严重反馈，决定放弃 G6，重写 D3GraphCanvas.tsx
+第6轮：D3.js SVG 最终优化版，P0 问题根治
+第7轮：测试覆盖 + Hooks 抽取 + CI/CD 完善（本轮）
+
+================================================================================
+  以下为历史轮次记录
+================================================================================
+
+--------------------------------------------------------------------------------
   轮次：第 6 轮（上下文中断后重建，最终版）
   日期：2026-05-02
-  地址：https://oxadcxgz4v6ao.ok.kimi.link
   状态：D3.js SVG 渲染已部署，三类 P0 问题已根治
 --------------------------------------------------------------------------------
 
@@ -40,19 +111,3 @@
 已知问题
 --------
 暂无。等待用户验证。
-
-下一步可选
-----------
-- 搜索自动定位并高亮路径
-- 实体详情面板内关联导航
-- 导出图片/数据
-- 引入后端 GraphDB 替换 InMemoryAdapter
-
-历史轮次摘要
-------------
-第1轮：项目重建，Palantir Ontology 架构（ObjectType + LinkType + ActionType）
-第2轮：修复 TypeScript enum 编译错误，修复黑屏（QueryEngine 异步获取类型）
-第3轮：技术栈升级引入 G6 v5，业务语义分类（5类节点 + 3类边）
-第4轮：G6 右键/闪烁/过曝问题多次修复未果
-第5轮：用户严重反馈，决定放弃 G6，重写 D3GraphCanvas.tsx
-第6轮：D3.js SVG 最终优化版，P0 问题根治（本轮）
